@@ -1,6 +1,6 @@
 # ani-py
 
-> Persistent project memory — durable knowledge only.
+> Persistent project memory - durable knowledge only.
 >
 > This file is NOT a changelog, session log, TODO list, or git history.
 > Git already records what changed and when. This file records what
@@ -16,7 +16,7 @@
 ## 1. Project Overview
 
 **Purpose:** A polished, standalone terminal anime CLI for searching,
-selecting, streaming, and downloading anime — one self-contained Python
+selecting, streaming, and downloading anime - one self-contained Python
 implementation that keeps app logic in the standard library and delegates
 networking, menus, playback, and downloads to best-of-breed external tools.
 
@@ -38,7 +38,7 @@ networking, menus, playback, and downloads to best-of-breed external tools.
 | Component | Choice |
 |---|---|
 | Language | Python 3.10+ (3.10–3.13 in CI) |
-| Python dependencies | None — stdlib only, permanently |
+| Python dependencies | None - stdlib only, permanently |
 | HTTP | `curl` / curl-impersonate via `HttpClient` wrapper |
 | Menu frontends | `fzf` (default), `rofi`, `dmenu`, built-in numbered fallback |
 | Players | `mpv` (primary), `vlc`, `iina`, custom via `--player` |
@@ -66,7 +66,7 @@ networking, menus, playback, and downloads to best-of-breed external tools.
 ```text
 ani-py/
 ├── ani-py                  # executable wrapper (thin launcher)
-├── ani_py.py               # the monolith — all app logic
+├── ani_py.py               # the monolith - all app logic
 ├── tests/test_*.py         # stdlib unittest suite
 ├── scripts/                # run-tests.sh, smoke-help.sh, check-tools.sh, build-standalone.sh
 ├── docs/                   # banner image
@@ -85,7 +85,7 @@ Scraping is isolated in one provider class so markup breakage is a
 one-class fix; everything interactive (menus, playback, downloads) is
 delegated to external binaries. Simple over clever; terminal-first.
 
-**Folder Organization:** Flat repo — module, tests, and scripts at top
+**Folder Organization:** Flat repo - module, tests, and scripts at top
 level. No packages, no layers, no plugins.
 
 **Data Flow:** `App`: query → `ProviderManager` (HiAnime → AnimeKai
@@ -99,7 +99,7 @@ provider-aware history.
 ## 5. Non-Goals
 
 - No pip / runtime Python package dependencies, ever
-- No GUI or web UI — terminal only
+- No GUI or web UI - terminal only
 - No microservices, no daemon, no hosted backend
 - No offline sync or streaming server
 
@@ -109,12 +109,12 @@ provider-aware history.
 
 - All app logic lives in `ani_py.py`; `./ani-py` stays a thin launcher.
 - All scraping/network parsing stays in provider adapters
-  (`HianimeProvider`, `AnimeKaiProvider`) — never in `App`,
+  (`HianimeProvider`, `AnimeKaiProvider`) - never in `App`,
   `Playback`, or `Menu`. `ProviderManager` owns selection/failover.
 - Player control goes through `Playback` (private per-process mpv IPC
   socket by default; never hijack a shared `/tmp/mpvsocket`).
 - Tests are stdlib `unittest` importing `ani_py` from the repo root.
-- No network in unit tests — fake HTTP responses only; live provider
+- No network in unit tests - fake HTTP responses only; live provider
   checks are manual.
 
 ---
@@ -123,14 +123,14 @@ provider-aware history.
 
 **General:**
 - Match existing style; surgical changes only, no drive-by refactors.
-- `fail()` raises `SystemExit` — tests expect that for error paths.
+- `fail()` raises `SystemExit` - tests expect that for error paths.
 - Filenames/titles from the network are sanitized before touching disk.
 
 **CLI:**
 - Env-var defaults mirror flags (`ANI_PY_*`: mode, quality, player,
   skip, detach, download dir, IPC socket, menu flags).
 - Passthrough options (`--menu-flags`, `--player-flag`) take dash-flags
-  only via the `--opt='--flag'` equals form (argparse limitation) —
+  only via the `--opt='--flag'` equals form (argparse limitation) -
   documented in `--help`, covered by `tests/test_cli.py`.
 
 **Testing:**
@@ -146,13 +146,13 @@ provider-aware history.
 **Status:** Current
 **Reason:** Single-file portability, no install/venv friction for a
 personal CLI.
-**Alternatives Considered:** [likely: requests/click/pytest — rejected for dependency weight]
+**Alternatives Considered:** [likely: requests/click/pytest - rejected for dependency weight]
 
 ### Hianime as the (current) provider
 **Choice:** Scrape hianime; provider markup isolated in `HianimeProvider`.
 **Status:** Current
 **Reason:** Works without API keys; isolation keeps markup churn cheap.
-**Alternatives Considered:** Multi-provider (deferred — see §1 direction).
+**Alternatives Considered:** Multi-provider (deferred - see §1 direction).
 
 ### Independent fork as its own repo
 **Choice:** Own copy instead of contributing AI-generated code upstream.
@@ -165,7 +165,7 @@ though upstream v0.5.0 ships `hianime,kuhi`. Kuhi and AnimeKai stay
 experimental opt-in until a live instance is confirmed from this network.
 **Status:** Current
 **Reason:** The Kuhi public instance returns `DEPLOYMENT_NOT_FOUND` and
-AnimeKai has no trusted domain — auto-probing either every run wastes time
+AnimeKai has no trusted domain - auto-probing either every run wastes time
 and warns noise. Re-enable by changing one default when verified.
 **Alternatives Considered:** Upstream default as-is (rejected: dead preflight
 on every run); removing the providers entirely (rejected: machinery is good
@@ -179,7 +179,7 @@ AJAX search → JSON schema → result-anchor fragment) before automatic paths
 use it. `--list-providers` tags it `[experimental]`.
 **Status:** Current
 **Reason:** v0.4.0 shipped AnimeKai as an enabled backup on contract evidence
-only — no live request ever succeeded. The hardcoded `anikai.to` has no DNS
+only - no live request ever succeeded. The hardcoded `anikai.to` has no DNS
 answer and reachable mirrors serve anti-bot/parking pages. A configured name
 is not evidence of a usable service.
 **Alternatives Considered:** Swapping the default to another mirror (rejected:
@@ -193,6 +193,12 @@ run foreground with keep-open disabled; `--skip` forces fresh processes.
 **Reason:** In-place IPC replace can't carry episode-specific ani-skip
 flags safely; private socket avoids hijacking the user's mpv.
 
+### Termux/Android playback port
+**Choice:** Loopback-only `AndroidMediaRelay` plus Termux branches in `Playback`/`App`; Termux detection runs before desktop players; `am`/`pm` ACTION_VIEW intents to mpv-android (`is.xyz.mpv`) or VLC (`org.videolan.vlc`).
+**Status:** Current (desktop-verified; live-device test pending)
+**Reason:** Android VIEW intents cannot carry Referer headers, so the relay keeps provider headers inside Termux and rewrites HLS child URLs through itself on 127.0.0.1 behind a random secret path.
+**Alternatives Considered:** Wholesale copy of reference ZIP (rejected: would clobber newer provider defaults); direct intent URLs without relay (rejected: Referer-gated streams fail).
+
 ---
 
 ## 9. Domain Knowledge
@@ -201,7 +207,7 @@ flags safely; private socket avoids hijacking the user's mpv.
 - Sub and dub resolve through separate servers/streams.
 - HLS variant sets differ per episode upstream (one episode may offer
   1080/720/360 while another offers 1080-only); quality selection falls
-  back to best available — not an app bug.
+  back to best available - not an app bug.
 - Episode spec: `4`, ranges `4-9` / `:` / `..`, `0` = first, `-1` = last,
   reversed ranges allowed; anything unresolvable yields empty, never an error.
 - A multi-episode selection is a sequential queue, not parallel players.
@@ -215,26 +221,26 @@ flags safely; private socket avoids hijacking the user's mpv.
 ## 10. Known Gotchas
 
 ### Provider / network
-- Hianime markup changes silently break search/resolve — when streams
+- Hianime markup changes silently break search/resolve - when streams
   fail, check markup first; the fix is confined to `HianimeProvider`.
 - CDN throughput varies (~400KB/s observed); slow downloads are usually
   the CDN, not the app. yt-dlp fragment retries handle transient stalls.
 
 ### CLI parsing
-- `--menu-flags --exact` fails (`expected one argument`) — argparse won't
+- `--menu-flags --exact` fails (`expected one argument`) - argparse won't
   take flag-like values positionally. Always use `--menu-flags='--exact'`.
   Same for `--player-flag`.
 - Interactive menus need a TTY; headless runs hang or die at the prompt.
 
 ### Shell / processes
-- Detached mpv survives the controller — a crashed script leaves an
+- Detached mpv survives the controller - a crashed script leaves an
   orphan player + IPC socket behind; check `pgrep -f mpv` after failures.
 - `pkill -f <pattern>` matches your own shell's command line; exclude
   self before killing test players.
 
 **Assumptions to avoid:**
 - Never assume every episode exposes the same quality renditions.
-- Never assume `ani-skip` is installed — the app warns and continues.
+- Never assume `ani-skip` is installed - the app warns and continues.
 - Never assume `~/.local/bin/ani-py` and the repo are in sync.
 
 ---
@@ -242,7 +248,8 @@ flags safely; private socket avoids hijacking the user's mpv.
 ## 11. Implementation Notes
 
 - `dist/` holds a built artifact; rebuild via `make build`, don't hand-edit.
-- `rofi`/`dmenu` are optional — absent here; `fzf` + numbered fallback
+- `scripts/check-termux.sh` gates live Android testing (needs `am`/`pm` plus mpv-android or VLC); on desktop it fails closed, which is expected.
+- `rofi`/`dmenu` are optional - absent here; `fzf` + numbered fallback
   cover menu paths.
 - Public repo: `github.com/Onehand-Coding/ani-py` (`main`, pushed 2026-09-22).
   `dist/` and `__pycache__/` are git-ignored; rebuild via `make build`.
@@ -268,7 +275,7 @@ flags safely; private socket avoids hijacking the user's mpv.
 | `Makefile` | `test` / `smoke` / `tools` / `build` targets |
 | `CHANGELOG.md` | Release notes |
 
-**Generated — never edit manually:**
+**Generated - never edit manually:**
 | Path | Type | Regenerated by |
 |---|---|---|
 | `dist/ani-py` | file | `scripts/build-standalone.sh` |
@@ -317,11 +324,11 @@ ANI_PY_DOWNLOAD_DIR=/tmp/x          # redirect downloads
 `auto` mode fails over HiAnime → AnimeKai (order via `--provider-order`
 / `ANI_PY_PROVIDER_ORDER`); base URL overridable via `ANI_PY_ANIMEKAI_URL`.
 As of 2026-09-22 the hardcoded `anikai.to` does not resolve from here and
-reachable mirrors serve anti-bot challenges — live AnimeKai unverified,
+reachable mirrors serve anti-bot challenges - live AnimeKai unverified,
 HiAnime path fully working. If `ani-skip` is missing or errors, `--skip`
 warns and plays without skip flags.
 
-**Secrets Location:** None — no keys, no accounts, no `.env`.
+**Secrets Location:** None - no keys, no accounts, no `.env`.
 
 ---
 
@@ -329,7 +336,7 @@ warns and plays without skip flags.
 
 **Implementation Style:**
 - Prefer incremental changes over rewrites; match existing style.
-- Never add a Python dependency — few lines of stdlib beat any package.
+- Never add a Python dependency - few lines of stdlib beat any package.
 - Never put logic in the `ani-py` wrapper.
 - Keep network code in `HianimeProvider`, player code in `Playback`.
 - Explain architectural changes before implementing them.
@@ -350,16 +357,17 @@ warns and plays without skip flags.
 - `--skip` is mpv-only by design; other players warn and ignore it.
 - Dual provider (HiAnime + AnimeKai) with failover; no further backends yet.
 - `rofi`/`dmenu` paths exist but are untested here (not installed).
+- Termux playback is desktop-verified only (95/95 green plus relay Range/HEAD probe); live-device playback still pending.
 
 ---
 
 ## Maintenance Rules
 
-> Decisions are append-only (see §8). Never delete a decision — supersede or
+> Decisions are append-only (see §8). Never delete a decision - supersede or
 > deprecate it instead.
 
 Umbrella rule: never update this file for implementation work unless it
-changes durable project knowledge. (A bug fix is usually just a bug fix — but
+changes durable project knowledge. (A bug fix is usually just a bug fix - but
 if fixing it revealed provider markup behavior, that's a gotcha.)
 
 Before touching this file, run through this checklist. If every answer is

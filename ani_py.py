@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ani-py — standalone anime CLI
+ani-py - standalone anime CLI
 
 Single-file, standard-library-only Python application.
 External tools are used where they make sense (curl/curl-impersonate,
@@ -25,6 +25,8 @@ import shutil
 import signal
 import socket
 import subprocess
+import threading
+import secrets
 import sys
 import tempfile
 import textwrap
@@ -33,6 +35,9 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 from urllib.parse import quote_plus, urlencode, urljoin, urlsplit
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "ani-py"
 VERSION = "0.5.0"
@@ -1381,6 +1386,163 @@ class Menu:
         return [items[i - 1] for i in picks if 1 <= i <= len(items)]
 
 
+# ---------- Android / Termux media relay ----------
+
+class AndroidMediaRelay:
+    """Loopback-only HTTP relay for Android players launched from Termux.
+
+    Android VIEW intents cannot reliably carry arbitrary HTTP Referer headers.
+    The relay keeps provider headers inside Termux and rewrites HLS playlist
+    child URLs back through itself. It is deliberately bound to 127.0.0.1.
+    """
+
+    def __init__(self, referer: str, user_agent: str = USER_AGENT) -> None:
+        self.referer = referer
+        self.user_agent = user_agent
+        self.secret = secrets.token_urlsafe(18)
+        self.server: Optional[ThreadingHTTPServer] = None
+        self.thread: Optional[threading.Thread] = None
+
+    @staticmethod
+    def _encode_url(url: str) -> str:
+        return base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_url(token: str) -> str:
+        padding = "=" * (-len(token) % 4)
+        return base64.urlsafe_b64decode(token + padding).decode("utf-8")
+
+    def local_url(self, upstream: str) -> str:
+        if self.server is None:
+            raise RuntimeError("Android relay is not running")
+        host, port = self.server.server_address[:2]
+        return f"http://{host}:{port}/{self.secret}/{self._encode_url(upstream)}"
+
+    def _rewrite_playlist(self, body: bytes, upstream: str) -> bytes:
+        text = body.decode("utf-8", errors="replace")
+
+        def attr_uri(match: re.Match[str]) -> str:
+            child = urljoin(upstream, match.group(1))
+            return f'URI="{self.local_url(child)}"'
+
+        out: list[str] = []
+        for raw in text.splitlines():
+            stripped = raw.strip()
+            if not stripped:
+                out.append(raw)
+                continue
+            if stripped.startswith("#"):
+                out.append(re.sub(r'URI="([^"]+)"', attr_uri, raw))
+                continue
+            out.append(self.local_url(urljoin(upstream, stripped)))
+        return ("\n".join(out) + "\n").encode("utf-8")
+
+    def start(self) -> "AndroidMediaRelay":
+        relay = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, fmt: str, *args: object) -> None:
+                return
+
+            def _target(self) -> Optional[str]:
+                path = self.path.split("?", 1)[0]
+                prefix = f"/{relay.secret}/"
+                if not path.startswith(prefix):
+                    return None
+                try:
+                    url = relay._decode_url(path[len(prefix):])
+                except Exception:
+                    return None
+                if urlsplit(url).scheme not in {"http", "https"}:
+                    return None
+                return url
+
+            def _serve(self, *, head: bool = False) -> None:
+                target = self._target()
+                if not target:
+                    self.send_error(404)
+                    return
+                headers = {
+                    "User-Agent": relay.user_agent,
+                    "Referer": relay.referer,
+                    "Accept": self.headers.get("Accept", "*/*"),
+                }
+                if self.headers.get("Range"):
+                    headers["Range"] = self.headers["Range"]
+                req = Request(target, headers=headers, method="HEAD" if head else "GET")
+                try:
+                    response = urlopen(req, timeout=25)
+                except HTTPError as exc:
+                    self.send_error(exc.code, str(exc.reason))
+                    return
+                except (URLError, OSError) as exc:
+                    self.send_error(502, str(exc))
+                    return
+                with response:
+                    status_code = getattr(response, "status", 200) or 200
+                    content_type = response.headers.get("Content-Type", "application/octet-stream")
+                    if head:
+                        self.send_response(status_code)
+                        for key in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                            value = response.headers.get(key)
+                            if value:
+                                self.send_header(key, value)
+                        self.end_headers()
+                        return
+                    looks_playlist = (
+                        ".m3u8" in urlsplit(target).path.lower()
+                        or "mpegurl" in content_type.lower()
+                    )
+                    if looks_playlist:
+                        body = response.read()
+                        if body.lstrip().startswith(b"#EXTM3U"):
+                            body = relay._rewrite_playlist(body, target)
+                            content_type = "application/vnd.apple.mpegurl"
+                        self.send_response(status_code)
+                        self.send_header("Content-Type", content_type)
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+                    self.send_response(status_code)
+                    for key in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                        value = response.headers.get(key)
+                        if value:
+                            self.send_header(key, value)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    while True:
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+
+            def do_GET(self) -> None:
+                self._serve(head=False)
+
+            def do_HEAD(self) -> None:
+                self._serve(head=True)
+
+        class Server(ThreadingHTTPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        self.server = Server(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, name="ani-py-android-relay", daemon=True)
+        self.thread.start()
+        return self
+
+    def stop(self) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        self.server = None
+        self.thread = None
+
+
 # ---------- player / downloader ----------
 
 class Playback:
@@ -1395,10 +1557,47 @@ class Playback:
 
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
-        self.player = self._detect_player()
         self.proc: Optional[subprocess.Popen] = None
         self.ipc_path: Optional[Path] = None
         self._detached = False
+        self._android_active = False
+        self._android_relay: Optional[AndroidMediaRelay] = None
+        self._android_package: Optional[str] = None
+        self.player = self._detect_player()
+
+    @staticmethod
+    def _is_android_env() -> bool:
+        return bool(os.getenv("TERMUX_VERSION") or os.getenv("ANDROID_ROOT") or os.getenv("ANDROID_DATA"))
+
+    @staticmethod
+    def _android_tool(name: str) -> Optional[str]:
+        return which_first([name, f"/system/bin/{name}"])
+
+    def _android_package_installed(self, package: str) -> bool:
+        pm = self._android_tool("pm")
+        if not pm:
+            return False
+        proc = run_capture([pm, "path", package])
+        return proc.returncode == 0 and any(line.startswith("package:") for line in proc.stdout.splitlines())
+
+    def _detect_android_player(self) -> str:
+        requested = getattr(self.args, "android_player", None) or os.getenv("ANI_PY_ANDROID_PLAYER", "auto")
+        if getattr(self.args, "vlc", False):
+            requested = "vlc"
+        choices = [requested] if requested != "auto" else ["mpv", "vlc"]
+        packages = {"mpv": "is.xyz.mpv", "vlc": "org.videolan.vlc"}
+        for choice in choices:
+            package = packages.get(choice)
+            if package and self._android_package_installed(package):
+                self._android_package = package
+                return f"android_{choice}"
+        wanted = "mpv-android or VLC for Android" if requested == "auto" else (
+            "mpv-android" if requested == "mpv" else "VLC for Android"
+        )
+        fail(
+            f"Termux/Android detected, but {wanted} was not found. "
+            "Install the Android app, or choose another --android-player."
+        )
 
     def _detect_player(self) -> str:
         if self.args.download:
@@ -1408,6 +1607,8 @@ class Playback:
             if not resolved:
                 fail(f"Requested player '{self.args.player}' was not found.")
             return resolved
+        if self._is_android_env():
+            return self._detect_android_player()
         if self.args.vlc:
             candidate = "vlc.exe" if platform.system() == "Windows" else "vlc"
             resolved = which_first([candidate])
@@ -1416,8 +1617,6 @@ class Playback:
             return resolved
 
         system = platform.system()
-        if "ANDROID_ROOT" in os.environ or "TERMUX_VERSION" in os.environ:
-            return "android_mpv"
         if system == "Darwin":
             resolved = which_first(["iina", "/Applications/IINA.app/Contents/MacOS/iina-cli", "mpv", "vlc"])
         elif system == "Windows":
@@ -1428,8 +1627,11 @@ class Playback:
             fail("No media player found. Install mpv or VLC, or pass --player.")
         return resolved
 
+    def _is_android_player(self) -> bool:
+        return self.player in {"android_mpv", "android_vlc"}
+
     def _is_mpv(self) -> bool:
-        if self.player in {"download", "android_mpv"}:
+        if self.player == "download" or self._is_android_player():
             return False
         return "mpv" in Path(self.player).name.lower()
 
@@ -1531,6 +1733,8 @@ class Playback:
         return False
 
     def active(self) -> bool:
+        if self._is_android_player():
+            return self._android_active
         if not self._is_mpv() or self.ipc_path is None:
             return self.proc is not None and self.proc.poll() is None
         try:
@@ -1560,6 +1764,14 @@ class Playback:
 
     def stop(self) -> None:
         self._detached = False
+        if self._is_android_player():
+            package = self._android_package
+            am = self._android_tool("am")
+            if package and am:
+                subprocess.run([am, "force-stop", package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._android_active = False
+            self._stop_android_relay()
+            return
         if self._is_mpv() and self.ipc_path is not None:
             try:
                 self._ipc(["quit"], timeout=0.7)
@@ -1576,10 +1788,61 @@ class Playback:
         self._cleanup_ipc()
 
     def detach(self) -> None:
-        # Leave mpv alive. The socket belongs to that mpv process and should not
-        # be unlinked while it is running.
+        # A relayed Android stream depends on this Termux process.
+        if self.requires_controller():
+            warn("Android playback is using the local header relay; exiting ani-py would stop the stream.")
+            return
         self._detached = True
         self.proc = None
+
+    def requires_controller(self) -> bool:
+        return self._is_android_player() and self._android_relay is not None
+
+    def can_detach(self) -> bool:
+        return not self.requires_controller()
+
+    def _stop_android_relay(self) -> None:
+        if self._android_relay is not None:
+            self._android_relay.stop()
+            self._android_relay = None
+
+    def _android_media_url(self, stream_url: str, referer: str) -> str:
+        mode = getattr(self.args, "android_relay", None) or os.getenv("ANI_PY_ANDROID_RELAY", "auto")
+        if mode not in {"auto", "always", "never"}:
+            mode = "auto"
+        if self.args.exit_after_play and mode == "always":
+            fail("--android-relay always cannot be combined with --exit-after-play; the relay requires ani-py to stay running.")
+        should_relay = mode == "always" or (mode == "auto" and bool(referer))
+        if self.args.exit_after_play and should_relay:
+            warn("--exit-after-play disables the Android relay; direct playback may fail for streams that require Referer headers.")
+            should_relay = False
+        self._stop_android_relay()
+        if not should_relay:
+            return stream_url
+        relay = AndroidMediaRelay(referer=referer).start()
+        self._android_relay = relay
+        return relay.local_url(stream_url)
+
+    def _android_launch(self, stream_url: str, *, title: str) -> int:
+        am = self._android_tool("am")
+        if not am or not self._android_package:
+            warn("Android activity manager/player package is unavailable.")
+            return 1
+        mime = "video/any" if self.player == "android_mpv" else "video/*"
+        cmd = [
+            am, "start", "-a", "android.intent.action.VIEW",
+            "-t", mime, "-p", self._android_package,
+            "-d", stream_url, "--es", "title", title,
+        ]
+        proc = run_capture(cmd)
+        if proc.returncode != 0:
+            detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+            warn(f"Android player launch failed: {detail}")
+            self._stop_android_relay()
+            self._android_active = False
+            return proc.returncode or 1
+        self._android_active = True
+        return 0
 
     def _cleanup_ipc(self) -> None:
         path = self.ipc_path
@@ -1662,14 +1925,15 @@ class Playback:
             return self.download(stream, title=title, subtitle=subtitle, referer=referer)
 
         extra = split_flags(os.getenv("ANI_PY_PLAYER_FLAGS", "")) + self.args.player_flag
-        basename = Path(self.player).name.lower() if self.player not in {"android_mpv"} else self.player
+        basename = Path(self.player).name.lower() if not self._is_android_player() else self.player
 
-        if self.player == "android_mpv":
-            cmd = [
-                "am", "start", "--user", "0", "-a", "android.intent.action.VIEW",
-                "-d", stream.url, "-n", "is.xyz.mpv/.MPVActivity", "-e", "title", title,
-            ]
-            return subprocess.run(cmd).returncode
+        if self._is_android_player():
+            if self.args.skip:
+                warn("--skip is not available through Android VIEW intents; playback will continue without ani-skip flags.")
+            if subtitle:
+                warn("External subtitle auto-attachment is not available from Termux shell intents; use embedded tracks or select subtitles in the Android player.")
+            media_url = self._android_media_url(stream.url, referer)
+            return self._android_launch(media_url, title=title)
 
         if "mpv" in basename:
             # Never leave two ani-py-owned mpv instances around.
@@ -1725,6 +1989,11 @@ class Playback:
         episode: str,
     ) -> int:
         """Replace the current mpv item in-place; restart only as a fallback."""
+        if self._is_android_player():
+            return self.play(
+                stream, title=title, subtitle=subtitle, referer=referer,
+                mal_id=mal_id, episode=episode,
+            )
         if not self._is_mpv() or not self._ipc_supported() or self.args.skip or not self.active():
             # --skip may carry episode-specific mpv flags, so a fresh process is
             # safer than trying to mutate unknown script options over IPC.
@@ -2152,9 +2421,10 @@ class App:
                 "Replay",
                 "Choose episode",
                 "Change quality",
-                "Detach & exit",
-                "Stop & quit",
             ]
+            if self.playback.can_detach():
+                options.append("Detach & exit")
+            options.append("Stop & quit")
             state = "playing" if self.playback.active() else "player closed"
             actual_quality = self.last_stream.quality if self.last_stream else quality
             source = self.providers.get(self.last_provider).display_name if self.last_provider else anime.provider
@@ -2169,6 +2439,9 @@ class App:
                 header=header,
             )
             if not picked:
+                if self.playback.requires_controller():
+                    warn("Keep ani-py running while Android relay playback is active; choose Stop & quit to end it.")
+                    continue
                 return
             action = picked[0]
             idx = episode_index(episodes, current.number)
@@ -2297,6 +2570,8 @@ def build_parser() -> argparse.ArgumentParser:
             environment:
               ANI_PY_PLAYER          preferred player executable
               ANI_PY_PLAYER_FLAGS    extra player flags
+              ANI_PY_ANDROID_PLAYER  Termux player: auto, mpv, or vlc
+              ANI_PY_ANDROID_RELAY   Termux header relay: auto, always, or never
               ANI_PY_IPC_SOCKET      override private mpv IPC socket (advanced)
               ANI_PY_MENU            fzf, rofi, dmenu, or fallback terminal UI
               ANI_PY_MENU_FLAGS      extra menu flags
@@ -2333,8 +2608,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dub", dest="mode", action="store_const", const="dub", help="use dubbed stream")
     parser.add_argument("--sub", dest="mode", action="store_const", const="sub", help="use subtitled stream")
     parser.set_defaults(mode=os.getenv("ANI_PY_MODE", "sub"))
-    parser.add_argument("-v", "--vlc", action="store_true", help="use VLC")
+    parser.add_argument("-v", "--vlc", action="store_true", help="use VLC (VLC for Android when running in Termux)")
     parser.add_argument("--player", default=os.getenv("ANI_PY_PLAYER"), help="custom player executable")
+    parser.add_argument(
+        "--android-player", choices=["auto", "mpv", "vlc"],
+        default=os.getenv("ANI_PY_ANDROID_PLAYER", "auto"),
+        help="Termux/Android player app (default: auto, preferring mpv-android)",
+    )
+    parser.add_argument(
+        "--android-relay", choices=["auto", "always", "never"],
+        default=os.getenv("ANI_PY_ANDROID_RELAY", "auto"),
+        help="Termux localhost Referer/header relay (default: auto)",
+    )
     parser.add_argument("--player-flag", action="append", default=[], help="extra player argument (repeatable; use --player-flag='--flag' for dash-flags)")
     parser.add_argument("--ipc-socket", help="mpv IPC socket path (default: private per ani-py process)")
     parser.add_argument("--menu", choices=["fzf", "rofi", "dmenu"], help="interactive menu frontend")

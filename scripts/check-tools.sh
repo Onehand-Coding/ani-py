@@ -41,3 +41,8 @@ if ! have python3 || ! have curl; then
 fi
 
 echo "Required tools are present."
+
+if [[ -n "${TERMUX_VERSION:-}" || -n "${ANDROID_ROOT:-}" ]]; then
+  echo
+  echo "Termux/Android detected. Run ./scripts/check-termux.sh for Android player checks."
+fi

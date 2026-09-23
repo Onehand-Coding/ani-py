@@ -26,7 +26,7 @@ ani-py keeps its application logic in the Python standard library while delegati
 
 ## Why this repo exists
 
-Most upstream repos that do the same thing don't want AI-generated code in theirs, and I didn't want to bother them. I'm also dumb and lazy — I don't want to code this manually. So I let AI build it for me, and now I have my own copy I can modify to my heart's content.
+Most upstream repos that do the same thing don't want AI-generated code in theirs, and I didn't want to bother them. I'm also dumb and lazy - I don't want to code this manually. So I let AI build it for me, and now I have my own copy I can modify to my heart's content.
 
 Beyond that, this repo exists to:
 

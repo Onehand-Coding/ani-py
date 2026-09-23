@@ -11,7 +11,7 @@
 - Documents `--opt='--flag'` equals form for `--menu-flags`/`--player-flag`
   (argparse won't take flag-like values positionally) with regression tests.
 
-## 0.5.0 — 2026-09-22
+## 0.5.0 - 2026-09-22
 
 - Replaced AnimeKai in the default automatic failover chain with **Kuhi**. Default order is now `hianime,kuhi`.
 - Added `KuhiProvider`, using AniList IDs for search/identity, merged provider episode lists, sub/dub extraction, direct HLS/MP4/DASH streams, subtitles, referer headers, quality labels, HLS master expansion, and MAL metadata where available.
@@ -22,7 +22,7 @@
 - Added `scripts/check-providers-live.sh` for a real-network Kuhi extraction check before releases.
 - Documented that the default public Kuhi instance may rate-limit/cold-start and can be replaced with a self-hosted deployment.
 
-## 0.4.0 — 2026-09-22
+## 0.4.0 - 2026-09-22
 
 - Refactored source handling behind a provider contract and `ProviderManager`.
 - Added AnimeKai as the first backup provider.
@@ -35,7 +35,7 @@
 - Added provider/source display to playback status and deduplicated quality choices.
 - Added mocked regression coverage for AnimeKai and provider failover.
 
-## 0.3.1 — 2026-09-22
+## 0.3.1 - 2026-09-22
 
 - Fixed `--skip` against `ani-skip` 1.0.1 by using the documented `-q/--query` flag directly.
 - Added a regression test that verifies the exact `ani-skip -q <MAL_ID> -e <episode>` invocation.
@@ -43,7 +43,7 @@
 - Kept visible warnings for missing MAL ids, missing `ani-skip`, command failures, and empty output.
 - Re-ran the full external-integration mock suite covering downloads, fzf/rofi/dmenu, mpv IPC, VLC, IINA, custom players, history, ranges, provider parsing, HTTP handling, and CLI options.
 
-## 0.3.0 — 2026-09-22
+## 0.3.0 - 2026-09-22
 
 - Fixed `--skip` compatibility across `ani-skip` variants:
   - prefer `-i/--id` for direct MAL id input

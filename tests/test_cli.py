@@ -39,6 +39,12 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ns.provider, "auto")
         self.assertEqual(ns.provider_order, "hianime")
 
+    def test_android_options_parse(self):
+        parser = ani_py.build_parser()
+        ns = parser.parse_args(["--android-player", "vlc", "--android-relay", "always", "frieren"])
+        self.assertEqual(ns.android_player, "vlc")
+        self.assertEqual(ns.android_relay, "always")
+
     def test_version_is_current(self):
         self.assertEqual(ani_py.VERSION, "0.5.0")
 
