@@ -25,6 +25,19 @@ show ffmpeg optional
 show ani-skip optional
 
 echo
+
+if [ -n "${TERMUX_VERSION:-}" ] || [ -n "${ANDROID_ROOT:-}" ]; then
+  echo
+  echo "Android / Termux"
+  show am recommended
+  show termux-open optional
+  if [ -x "$HOME/rish" ] || have rish; then
+    printf '  [ok] %-10s optional Shizuku fallback available\n' "rish"
+  else
+    printf '  [optional] %-10s not found (not required)\n' "rish"
+  fi
+fi
+
 if have ani-skip; then
   help="$(ani-skip --help 2>&1 || true)"
   if printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])-q([,[:space:]]|$)|--query'; then
@@ -41,8 +54,3 @@ if ! have python3 || ! have curl; then
 fi
 
 echo "Required tools are present."
-
-if [[ -n "${TERMUX_VERSION:-}" || -n "${ANDROID_ROOT:-}" ]]; then
-  echo
-  echo "Termux/Android detected. Run ./scripts/check-termux.sh for Android player checks."
-fi

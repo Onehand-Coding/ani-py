@@ -194,10 +194,10 @@ run foreground with keep-open disabled; `--skip` forces fresh processes.
 flags safely; private socket avoids hijacking the user's mpv.
 
 ### Termux/Android playback port
-**Choice:** Loopback-only `AndroidMediaRelay` plus Termux branches in `Playback`/`App`; Termux detection runs before desktop players; `am`/`pm` ACTION_VIEW intents to mpv-android (`is.xyz.mpv`) or VLC (`org.videolan.vlc`).
-**Status:** Current (desktop-verified; live-device test pending)
-**Reason:** Android VIEW intents cannot carry Referer headers, so the relay keeps provider headers inside Termux and rewrites HLS child URLs through itself on 127.0.0.1 behind a random secret path.
-**Alternatives Considered:** Wholesale copy of reference ZIP (rejected: would clobber newer provider defaults); direct intent URLs without relay (rejected: Referer-gated streams fail).
+**Choice:** Detached loopback relay child (`run_android_relay` via `--_android-relay-config`) plus intent dispatch in `Playback`; `android_auto` asks Android's resolver first, explicit `vlc`/`mpv` modes pin `org.videolan.vlc` / `is.xyz.mpv`; `termux-open` chooser and existing-`rish` retry are fallbacks only.
+**Status:** Current (0.5.1 rework; live-device verified 2026-09-24). Supersedes the 0.5.0 in-process `AndroidMediaRelay` with `pm path` preflight gating.
+**Reason:** `pm path` from an ordinary Termux UID is unreliable and unnecessary for `VIEW` dispatch; Android intents still cannot carry Referer headers, so the relay keeps provider headers inside Termux and rewrites nested HLS child/key/segment URLs through itself on 127.0.0.1 behind a random secret token. A detached child with idle timeout lets `Detach & exit` survive.
+**Alternatives Considered:** Wholesale copy of reference ZIP (rejected: would clobber newer provider defaults); direct intent URLs without relay (rejected: Referer-gated streams fail); killing the Android player on `stop()` (rejected: stopping the local relay is the least invasive action).
 
 ---
 
@@ -248,7 +248,7 @@ flags safely; private socket avoids hijacking the user's mpv.
 ## 11. Implementation Notes
 
 - `dist/` holds a built artifact; rebuild via `make build`, don't hand-edit.
-- `scripts/check-termux.sh` gates live Android testing (needs `am`/`pm` plus mpv-android or VLC); on desktop it fails closed, which is expected.
+- `scripts/check-termux.sh` gates live Android testing (needs `am`; `termux-open`/`rish` optional; player apps are not probed via `pm path`); on desktop it warns, which is expected.
 - `rofi`/`dmenu` are optional - absent here; `fzf` + numbered fallback
   cover menu paths.
 - Public repo: `github.com/Onehand-Coding/ani-py` (`main`, pushed 2026-09-22).
@@ -357,7 +357,7 @@ warns and plays without skip flags.
 - `--skip` is mpv-only by design; other players warn and ignore it.
 - Dual provider (HiAnime + AnimeKai) with failover; no further backends yet.
 - `rofi`/`dmenu` paths exist but are untested here (not installed).
-- Termux playback is desktop-verified only (95/95 green plus relay Range/HEAD probe); live-device playback still pending.
+- Termux playback is live-device verified (97/97 green plus relay Referer/Range/HLS-rewrite probes; owner confirmed VLC/auto playback on-device 2026-09-24).
 
 ---
 

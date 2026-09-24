@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -u
 
+# Live-device helper for Termux/Android playback checks.
+# Mirrors the app's launch order: normal `am` dispatch first, `termux-open`
+# chooser second, existing rish/Shizuku only as an optional fallback.
+# Player apps are NOT probed via `pm path`: package-manager queries from an
+# ordinary Termux UID are unreliable, and intent dispatch does not need them.
+
 if [[ -z "${TERMUX_VERSION:-}" && -z "${ANDROID_ROOT:-}" ]]; then
   echo "[warn] Termux/Android environment variables were not detected."
 fi
@@ -10,36 +16,26 @@ find_tool() {
 }
 
 AM="$(find_tool am || true)"
-PM="$(find_tool pm || true)"
+OPEN="$(find_tool termux-open || true)"
 
 echo "ani-py Termux check"
 echo "  TERMUX_VERSION: ${TERMUX_VERSION:-not set}"
 echo "  am: ${AM:-not found}"
-echo "  pm: ${PM:-not found}"
+echo "  termux-open: ${OPEN:-not found}"
 
-if [[ -z "$AM" || -z "$PM" ]]; then
-  echo "[fail] Android activity/package manager tools are unavailable."
+if [[ -z "$AM" ]]; then
+  echo "[fail] Android activity manager is unavailable; install termux-tools/termux-am."
   exit 1
 fi
 
-check_pkg() {
-  local package="$1" label="$2"
-  if "$PM" path "$package" 2>/dev/null | grep -q '^package:'; then
-    echo "  [ok] $label ($package)"
-    return 0
-  fi
-  echo "  [--] $label not installed ($package)"
-  return 1
-}
-
-mpv_ok=0
-vlc_ok=0
-check_pkg is.xyz.mpv "mpv-android" && mpv_ok=1
-check_pkg org.videolan.vlc "VLC for Android" && vlc_ok=1
-
-if [[ $mpv_ok -eq 0 && $vlc_ok -eq 0 ]]; then
-  echo "[fail] Install mpv-android or VLC for Android before live playback testing."
-  exit 1
+if [[ -x "$HOME/rish" ]]; then
+  echo "  [ok] rish optional Shizuku fallback available ($HOME/rish)"
+elif command -v rish >/dev/null 2>&1; then
+  echo "  [ok] rish optional Shizuku fallback available ($(command -v rish))"
+else
+  echo "  [--] rish not found (not required)"
 fi
 
-echo "[ok] Termux player prerequisites look usable."
+echo "Install VLC and/or mpv-android from the Play Store / F-Droid;"
+echo "ani-py dispatches VIEW intents without package-manager preflight."
+echo "[ok] Termux dispatch prerequisites look usable."

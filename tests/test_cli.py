@@ -41,12 +41,21 @@ class TestCLI(unittest.TestCase):
 
     def test_android_options_parse(self):
         parser = ani_py.build_parser()
-        ns = parser.parse_args(["--android-player", "vlc", "--android-relay", "always", "frieren"])
+        ns = parser.parse_args(["--android-player", "vlc", "frieren"])
         self.assertEqual(ns.android_player, "vlc")
-        self.assertEqual(ns.android_relay, "always")
+
+    def test_android_player_option_and_environment_default(self):
+        with patch.dict(os.environ, {"ANI_PY_ANDROID_PLAYER": "vlc"}, clear=False):
+            parser = ani_py.build_parser()
+            ns = parser.parse_args(["frieren"])
+        self.assertEqual(ns.android_player, "vlc")
+
+        parser = ani_py.build_parser()
+        ns = parser.parse_args(["--android-player", "mpv", "frieren"])
+        self.assertEqual(ns.android_player, "mpv")
 
     def test_version_is_current(self):
-        self.assertEqual(ani_py.VERSION, "0.5.0")
+        self.assertEqual(ani_py.VERSION, "0.5.1")
 
     def test_default_provider_order_is_hianime_only(self):
         # No unverified provider belongs in the default automatic chain:

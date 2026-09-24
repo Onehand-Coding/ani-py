@@ -11,6 +11,18 @@
 - Documents `--opt='--flag'` equals form for `--menu-flags`/`--player-flag`
   (argparse won't take flag-like values positionally) with regression tests.
 
+## 0.5.1 - 2026-09-24
+
+- Reworked Termux/Android playback around Android `ACTION_VIEW` intents instead of package-manager preflight checks. `pm path` is no longer required.
+- Added `--android-player auto|vlc|mpv` and `ANI_PY_ANDROID_PLAYER`; `-v/--vlc` selects VLC for Android when running under Termux.
+- `auto` uses Android's normal resolver/default-player path, while explicit VLC/mpv modes pin `org.videolan.vlc` or `is.xyz.mpv`.
+- Added a stdlib-only localhost media relay for Android. It injects provider Referer/User-Agent headers, forwards byte ranges, and rewrites nested HLS playlists, key URIs, and segment URLs through the relay.
+- Added VLC `subtitles_location` intent forwarding.
+- Added normal Termux chooser fallback and optional `rish`/Shizuku targeted retry. Shizuku is never a dependency.
+- Relay processes are detached with an idle timeout so `Detach & exit` can leave Android playback running.
+- Removed the earlier `--android-relay auto|always|never` opt-in; the relay is now automatic with raw-URL fallback when it cannot start.
+- Added Android/relay regression coverage, including a real localhost fixture that rejects requests without the expected Referer. Test suite now has 96 tests.
+
 ## 0.5.0 - 2026-09-22
 
 - Replaced AnimeKai in the default automatic failover chain with **Kuhi**. Default order is now `hianime,kuhi`.

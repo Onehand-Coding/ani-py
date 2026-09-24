@@ -252,6 +252,47 @@ Alternative frontends:
 
 If the selected frontend is unavailable, ani-py falls back to a numbered terminal selector.
 
+## Termux / Android
+
+ani-py treats Android playback as **intent dispatch**, not as a desktop-player lookup. It deliberately does **not** call `pm path` to decide whether VLC/mpv is installed; package-manager calls from an ordinary Termux UID are unreliable on modern Android and are unnecessary for launching a `VIEW` intent.
+
+Recommended setup:
+
+```bash
+pkg update
+pkg install python curl fzf termux-tools termux-am
+```
+
+Install any normal Android video player. VLC and mpv-android are explicitly supported. Then run ani-py normally:
+
+```bash
+ani-py "frieren"
+```
+
+The default Android mode is `auto`: Android's normal media resolver/default-player mechanism is used, so other capable players can work too. Pin a player when desired:
+
+```bash
+ani-py --android-player vlc "frieren"
+ani-py --android-player mpv "frieren"
+ani-py -v "frieren"                 # VLC shortcut
+```
+
+Playback launch order is intentionally low-friction:
+
+1. Try the normal Termux `am`/TermuxAm `ACTION_VIEW` path.
+2. If normal targeting cannot launch, use Termux's `termux-open` chooser when available.
+3. If you already have `rish` + Shizuku configured, ani-py can retry the same intent through `rish`. **Shizuku is never required.**
+
+For protected streams, ani-py starts a small stdlib-only relay bound to `127.0.0.1`. The Android player receives the local URL while the relay injects the provider `Referer` and User-Agent upstream and rewrites nested HLS playlists/segments through itself. This avoids the old Android-VLC problem where an intent could launch VLC but could not attach the stream's HTTP referrer. The relay is detached and expires after an idle period, so **Detach & exit** does not immediately break playback.
+
+VLC receives the conventional `subtitles_location` string extra when a subtitle track is available. mpv-android's official subtitle intent uses a `ParcelableArray<Uri>`, which shell `am` cannot construct, so subtitle attachment is currently stronger with VLC than with mpv-android. `--skip` remains unavailable for Android intent players because `ani-skip` returns desktop mpv command-line/script options that cannot be injected through the Android intent API.
+
+Environment default:
+
+```bash
+export ANI_PY_ANDROID_PLAYER=vlc   # auto | vlc | mpv
+```
+
 ## Playback controls
 
 After a normal single-episode launch, ani-py exposes a compact controller:
@@ -308,6 +349,7 @@ A subtitle failure is reported, but it does not discard an otherwise valid video
 ```text
 ANI_PY_PLAYER          preferred player executable
 ANI_PY_PLAYER_FLAGS    extra player flags
+ANI_PY_ANDROID_PLAYER  Termux/Android player: auto, vlc, or mpv
 ANI_PY_IPC_SOCKET      override private mpv IPC socket (advanced)
 ANI_PY_MENU            fzf, rofi, dmenu, or fallback terminal UI
 ANI_PY_MENU_FLAGS      extra menu flags
@@ -350,6 +392,7 @@ Current coverage includes:
 - private mpv IPC paths
 - mpv live replace and replay commands
 - VLC, IINA, and custom-player command construction
+- Termux/Android intent routing, optional rish fallback, and Android player pinning
 - exact `ani-skip -q <MAL_ID> -e <episode>` integration and failure paths
 - `yt-dlp` download command construction
 - ffmpeg fallback command construction
