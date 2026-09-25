@@ -3238,9 +3238,8 @@ def build_parser() -> argparse.ArgumentParser:
               ani-py -d -e 1-12 "pluto"
 
             environment:
-              ANI_PY_PLAYER          preferred desktop/custom player executable
+              ANI_PY_PLAYER          preferred player (mpv, vlc, iina, auto, or executable)
               ANI_PY_PLAYER_FLAGS    extra player flags
-              ANI_PY_ANDROID_PLAYER  auto, vlc, or mpv (Termux/Android)
               ANI_PY_IPC_SOCKET      override private mpv IPC socket (advanced)
               ANI_PY_MENU            fzf, rofi, dmenu, or fallback terminal UI
               ANI_PY_MENU_FLAGS      extra menu flags
