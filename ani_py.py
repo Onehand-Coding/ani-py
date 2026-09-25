@@ -3285,11 +3285,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     # Compatibility aliases from pre-0.5.2 releases. Keep parsing them for now,
     # but expose --player/-p as the single documented player interface.
-    parser.add_argument("-v", "--vlc", dest="player", action="store_const", const="vlc", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "-v", "--vlc",
+        dest="player",
+        action="store_const",
+        const="vlc",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--android-player",
         dest="player",
         choices=["auto", "vlc", "mpv"],
+        default=argparse.SUPPRESS,
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--player-flag", action="append", default=[], help="extra player argument (repeatable; use --player-flag='--flag' for dash-flags)")
