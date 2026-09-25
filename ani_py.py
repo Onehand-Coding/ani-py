@@ -39,7 +39,7 @@ from urllib import request as urllib_request
 from urllib.parse import quote_plus, urlencode, urljoin, urlsplit
 
 APP_NAME = "ani-py"
-VERSION = "0.5.2-rc7"
+VERSION = "0.5.2-rc8"
 BASE_URL = "https://hianime.at"
 ANIMEKAI_BASE_URL = ""  # no trusted default; set ANI_PY_ANIMEKAI_URL explicitly
 KUHI_BASE_URL = "https://anime-scraper-v2.vercel.app"
@@ -2001,28 +2001,21 @@ class Playback:
         if self.args.download:
             return "download"
 
-        # Android apps are launched by VIEW intents.  Do not preflight packages
-        # with `pm path`: package-manager access from an ordinary Termux UID is
-        # unreliable on modern Android and is not required to launch an intent.
-        if is_android_environment() and not self.args.player:
-            requested = getattr(self.args, "android_player", None) or os.getenv("ANI_PY_ANDROID_PLAYER", "auto")
-            if self.args.vlc:
-                requested = "vlc"
+        # --player/-p is the single player selector on every platform.
+        # Android apps are launched by VIEW intents; do not preflight packages
+        # with `pm path`, which is unreliable from an ordinary Termux UID.
+        requested_player = (self.args.player or "").strip()
+        if is_android_environment():
+            requested = requested_player or os.getenv("ANI_PY_ANDROID_PLAYER", "auto")
             requested = requested.lower()
             if requested not in {"auto", "vlc", "mpv"}:
-                requested = "auto"
+                fail("On Termux/Android, --player supports: auto, vlc, mpv.")
             return f"android_{requested}"
 
-        if self.args.player:
-            resolved = which_first([self.args.player])
+        if requested_player and requested_player.lower() != "auto":
+            resolved = which_first([requested_player])
             if not resolved:
-                fail(f"Requested player '{self.args.player}' was not found.")
-            return resolved
-        if self.args.vlc:
-            candidate = "vlc.exe" if platform.system() == "Windows" else "vlc"
-            resolved = which_first([candidate])
-            if not resolved:
-                fail("VLC was requested but was not found.")
+                fail(f"Requested player '{requested_player}' was not found.")
             return resolved
 
         system = platform.system()
@@ -3284,14 +3277,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dub", dest="mode", action="store_const", const="dub", help="use dubbed stream")
     parser.add_argument("--sub", dest="mode", action="store_const", const="sub", help="use subtitled stream")
     parser.set_defaults(mode=os.getenv("ANI_PY_MODE", "sub"))
-    parser.add_argument("-v", "--vlc", action="store_true", help="use VLC (VLC for Android on Termux)")
+    parser.add_argument(
+        "-p",
+        "--player",
+        default=os.getenv("ANI_PY_PLAYER"),
+        help="player: mpv, vlc, iina, auto, or a custom executable (Android: auto, vlc, mpv)",
+    )
+    # Compatibility aliases from pre-0.5.2 releases. Keep parsing them for now,
+    # but expose --player/-p as the single documented player interface.
+    parser.add_argument("-v", "--vlc", dest="player", action="store_const", const="vlc", help=argparse.SUPPRESS)
     parser.add_argument(
         "--android-player",
+        dest="player",
         choices=["auto", "vlc", "mpv"],
-        default=os.getenv("ANI_PY_ANDROID_PLAYER", "auto"),
-        help="Termux/Android player: auto chooser, VLC, or mpv-android",
+        help=argparse.SUPPRESS,
     )
-    parser.add_argument("--player", default=os.getenv("ANI_PY_PLAYER"), help="custom player executable")
     parser.add_argument("--player-flag", action="append", default=[], help="extra player argument (repeatable; use --player-flag='--flag' for dash-flags)")
     parser.add_argument("--ipc-socket", help="mpv IPC socket path (default: private per ani-py process)")
     parser.add_argument("--menu", choices=["fzf", "rofi", "dmenu"], help="interactive menu frontend")
@@ -3315,8 +3315,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args._android_relay_config:
         return run_android_relay(args._android_relay_config)
-    if args.vlc and args.player:
-        parser.error("--vlc and --player cannot be used together")
     try:
         return App(args).run()
     except KeyboardInterrupt:
