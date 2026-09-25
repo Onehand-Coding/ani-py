@@ -57,7 +57,7 @@ class TestAndroidIntent(unittest.TestCase):
 
     @patch("ani_py.is_android_environment", return_value=True)
     def test_legacy_android_player_env_remains_compatible(self, _android):
-        with patch.dict("os.environ", {"ANI_PY_ANDROID_PLAYER": "mpv"}, clear=False):
+        with patch.dict(ani_py.os.environ, {"ANI_PY_ANDROID_PLAYER": "mpv"}, clear=False):
             pb = ani_py.Playback(args())
         self.assertEqual(pb.player, "android_mpv")
 
