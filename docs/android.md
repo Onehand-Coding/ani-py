@@ -24,9 +24,8 @@ ani-py -p vlc "frieren"
 ani-py -p mpv "frieren"
 ```
 
-`ANI_PY_PLAYER` is the corresponding environment default. The older
-`ANI_PY_ANDROID_PLAYER`, `--android-player`, and `-v/--vlc` forms are
-accepted only as compatibility aliases.
+`ANI_PY_PLAYER` is the corresponding environment default. Player selection
+uses only `-p/--player` on both desktop and Android.
 
 ## Playback model
 
