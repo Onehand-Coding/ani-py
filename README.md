@@ -97,10 +97,10 @@ ani-py --list-providers
 Useful player/menu examples:
 
 ```sh
-ani-py -v "frieren"                       # VLC
+ani-py -p vlc "frieren"                    # VLC
 ani-py --menu rofi "frieren"
 ani-py --menu dmenu "frieren"
-ani-py --player mpv "frieren"
+ani-py -p mpv "frieren"                    # mpv
 ```
 
 Run `ani-py --help` for the complete current option list.
@@ -108,9 +108,9 @@ Run `ani-py --help` for the complete current option list.
 ## Termux / Android
 
 ```sh
-ani-py "frieren"                       # Android resolver/default player
-ani-py -v "frieren"                    # VLC for Android
-ani-py --android-player mpv "frieren"  # mpv-android
+ani-py "frieren"             # Android resolver/default player
+ani-py -p vlc "frieren"      # VLC for Android
+ani-py -p mpv "frieren"      # mpv-android
 ```
 
 For streams that require provider headers, ani-py uses a loopback-only relay on `127.0.0.1`. It keeps Referer/User-Agent handling inside Termux and rewrites HLS requests through the relay.
@@ -204,7 +204,6 @@ Common environment variables:
 ```text
 ANI_PY_PLAYER
 ANI_PY_PLAYER_FLAGS
-ANI_PY_ANDROID_PLAYER
 ANI_PY_IPC_SOCKET
 ANI_PY_MENU
 ANI_PY_MENU_FLAGS
@@ -248,7 +247,7 @@ Check external tools:
 Android diagnostics:
 
 ```sh
-ani-py --android-debug -v -e 1 "frieren"
+ani-py --android-debug -p vlc -e 1 "frieren"
 ```
 
 If mpv already uses `/tmp/mpvsocket`, no change is needed: ani-py uses a separate per-process IPC socket by default.
