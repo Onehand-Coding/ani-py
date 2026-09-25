@@ -1,26 +1,29 @@
 # Changelog
 
-## Unreleased (local checkout)
+## Unreleased (0.5.2-rc7)
 
-- Default automatic provider order is `hianime` only. Kuhi and AnimeKai stay
-  experimental opt-in until a live instance is confirmed from this network
-  (Kuhi's public instance is currently undeployed; AnimeKai has no trusted
-  default domain).
-- `--list-providers` tags experimental providers; automatic paths preflight
-  them before use.
-- Documents `--opt='--flag'` equals form for `--menu-flags`/`--player-flag`
-  (argparse won't take flag-like values positionally) with regression tests.
-- Android subtitles ride the relayed HLS playlist as a native subtitle
-  rendition (`DEFAULT`/`AUTOSELECT`, `LANGUAGE=en`): master playlists get it
-  injected, variant media playlists are wrapped in a generated master, and
-  the rendition URI is a VOD playlist around the complete subtitle file.
-  Staged Download copies plus `subtitles_location` remain as fallback.
-  VLC additionally needs one-time `--sub-language=eng` in its custom
-  libVLC options before it auto-selects the track. Test suite now has
-  120 tests.
-- README Termux/Android section gained device screenshots, screen
-  recordings (`docs/screenshots/`, `docs/clips/`), and the VLC subtitle
-  setup note.
+- Kept the default automatic provider order at `hianime` only; Kuhi and
+  AnimeKai remain experimental opt-in providers.
+- Android subtitles use the loopback HLS relay as a native subtitle rendition.
+  The injected group now uses a collision-resistant `ani-py-subs` id, leaves
+  existing upstream subtitle topology untouched, and carries language/label
+  metadata only when the provider actually supplies it.
+- Removed automatic shared-storage subtitle staging. VLC still receives its
+  `subtitles_location` URL fallback, while both VLC and mpv-android can use
+  the relayed WebVTT rendition without leaving per-episode files behind.
+- Removed the temporary `--android-vlc-explicit` A/B diagnostic; retained
+  `--android-debug` for sanitized intent/relay troubleshooting.
+- Fixed Python 3.10/3.11 compatibility in the IINA subtitle argument path and
+  fixed Android tests so clean CI runners do not require desktop media players.
+- Added `install.sh` / `uninstall.sh` with Linux/Unix and Termux defaults;
+  dependency installation is opt-in via `--deps`.
+- Trimmed the README and moved Android/provider/development internals into
+  `docs/android.md`, `docs/providers.md`, and `docs/development.md`.
+- Live-device status carried forward from rc6: VLC 3.7.1 and mpv-android both
+  played the relayed stream with subtitles on the project owner's Termux
+  device. The tested VLC setup needed `--sub-language=eng` once for English
+  auto-selection; this is documented as a player/device observation, not a
+  universal VLC requirement.
 
 ## 0.5.1 - 2026-09-24
 
