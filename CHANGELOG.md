@@ -10,6 +10,17 @@
   them before use.
 - Documents `--opt='--flag'` equals form for `--menu-flags`/`--player-flag`
   (argparse won't take flag-like values positionally) with regression tests.
+- Android subtitles ride the relayed HLS playlist as a native subtitle
+  rendition (`DEFAULT`/`AUTOSELECT`, `LANGUAGE=en`): master playlists get it
+  injected, variant media playlists are wrapped in a generated master, and
+  the rendition URI is a VOD playlist around the complete subtitle file.
+  Staged Download copies plus `subtitles_location` remain as fallback.
+  VLC additionally needs one-time `--sub-language=eng` in its custom
+  libVLC options before it auto-selects the track. Test suite now has
+  120 tests.
+- README Termux/Android section gained device screenshots, screen
+  recordings (`docs/screenshots/`, `docs/clips/`), and the VLC subtitle
+  setup note.
 
 ## 0.5.1 - 2026-09-24
 

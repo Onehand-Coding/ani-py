@@ -199,6 +199,12 @@ flags safely; private socket avoids hijacking the user's mpv.
 **Reason:** `pm path` from an ordinary Termux UID is unreliable and unnecessary for `VIEW` dispatch; Android intents still cannot carry Referer headers, so the relay keeps provider headers inside Termux and rewrites nested HLS child/key/segment URLs through itself on 127.0.0.1 behind a random secret token. A detached child with idle timeout lets `Detach & exit` survive.
 **Alternatives Considered:** Wholesale copy of reference ZIP (rejected: would clobber newer provider defaults); direct intent URLs without relay (rejected: Referer-gated streams fail); killing the Android player on `stop()` (rejected: stopping the local relay is the least invasive action).
 
+### VLC for Android subtitles (0.5.2-rc3 → rc6, live-device verified 2026-09-25)
+**Choice:** Subtitles ride the HLS playlist as an `EXT-X-MEDIA` rendition (`DEFAULT/AUTOSELECT=YES`, `LANGUAGE=en`) served by the relay: master playlists get the rendition injected, variant media playlists get wrapped in a generated single-variant master (`?variant=1` serves the raw variant), and the rendition URI is a `sublist` VOD playlist around the complete file (bare `.vtt` rendition URIs are fetched but unusable by VLC). The staged Download file plus `subtitles_location` extra remain as fallback/manual path only.
+**Reason:** VLC ignores remote-URL `subtitles_location` values and cannot read Termux-staged files directly (shared-storage files stay mode 600, `chmod` ignored) — only SAF picker grants give it access. mpv-android auto-selects the same rendition with no extra setup.
+**Device-side requirement (one time):** VLC → Settings → Advanced → custom libVLC options → `--sub-language=eng`. VLC loads the rendition but only *selects* it when it matches the preferred subtitle language; "Auto load subtitles" alone is not enough. Subtitle color/size are also VLC settings (white/normal recommended).
+**Known limitation:** If the ROM destroys VLC's activity in the background, playback restarts at position 0 on return (external intents carry no resume position); the rendition re-loads automatically, so only the position is lost.
+
 ---
 
 ## 9. Domain Knowledge

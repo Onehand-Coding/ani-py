@@ -39,7 +39,7 @@ from urllib import request as urllib_request
 from urllib.parse import quote_plus, urlencode, urljoin, urlsplit
 
 APP_NAME = "ani-py"
-VERSION = "0.5.1"
+VERSION = "0.5.2-rc6"
 BASE_URL = "https://hianime.at"
 ANIMEKAI_BASE_URL = ""  # no trusted default; set ANI_PY_ANIMEKAI_URL explicitly
 KUHI_BASE_URL = "https://anime-scraper-v2.vercel.app"
@@ -1405,10 +1405,52 @@ def _relay_decode(value: str) -> str:
     return base64.urlsafe_b64decode((value + padding).encode("ascii")).decode("utf-8")
 
 
-def _rewrite_hls_manifest(manifest: str, base_url: str, localize) -> str:
+_SUBTITLE_SUFFIXES = (".vtt", ".srt", ".ass", ".ssa")
+_SUBTITLE_MIME = {
+    ".vtt": "text/vtt; charset=utf-8",
+    ".srt": "application/x-subrip; charset=utf-8",
+    ".ass": "text/x-ssa; charset=utf-8",
+    ".ssa": "text/x-ssa; charset=utf-8",
+}
+
+
+def _subtitle_suffix_for(url: str) -> str:
+    """Cosmetic relay suffix for a subtitle URL; defaults to .vtt."""
+    path = urlsplit(url).path.lower()
+    for suffix in _SUBTITLE_SUFFIXES:
+        if path.endswith(suffix):
+            return suffix
+    return ".vtt"
+
+
+def _subtitle_mime_for_suffix(suffix: str) -> str:
+    return _SUBTITLE_MIME.get(suffix.lower(), "text/vtt; charset=utf-8")
+
+
+_ANDROID_SHARED_SUBTITLE_DIRNAME = "ani-py-subtitles"
+
+
+def _android_shared_subtitle_dir(home: Optional[Path] = None) -> Optional[Path]:
+    """Return Termux shared storage for VLC subtitle files, when available."""
+    downloads = (home or Path.home()) / "storage" / "downloads"
+    if not downloads.is_dir():
+        return None
+    target = downloads / _ANDROID_SHARED_SUBTITLE_DIRNAME
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return target
+
+
+def _rewrite_hls_manifest(
+    manifest: str, base_url: str, localize, subtitle_url: Optional[str] = None,
+) -> str:
     """Route every remote HLS URI back through the localhost relay."""
     uri_attr = re.compile(r'URI="([^"]+)"')
     out: list[str] = []
+    has_stream_inf = False
+    upstream_has_subtitles = "SUBTITLES=" in manifest
 
     def proxied(value: str) -> str:
         absolute = urljoin(base_url, value)
@@ -1416,28 +1458,111 @@ def _rewrite_hls_manifest(manifest: str, base_url: str, localize) -> str:
 
     for raw in manifest.splitlines():
         line = raw.rstrip("\r")
+        if line.startswith("#EXT-X-STREAM-INF"):
+            has_stream_inf = True
+            if subtitle_url and "SUBTITLES=" not in line:
+                line = f'{line},SUBTITLES="subs"'
         if line.startswith("#"):
             line = uri_attr.sub(lambda m: f'URI="{proxied(m.group(1))}"', line)
         elif line.strip():
             line = proxied(line.strip())
         out.append(line)
+    if subtitle_url and has_stream_inf and not upstream_has_subtitles:
+        media = (
+            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",'
+            f'LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="{subtitle_url}"'
+        )
+        if out and out[0] == "#EXTM3U":
+            out.insert(1, media)
+        else:
+            out.insert(0, media)
     return "\n".join(out) + ("\n" if manifest.endswith(("\n", "\r")) else "")
+
+
+def _wrap_hls_media_playlist(variant_url: str, subtitle_playlist_url: str) -> str:
+    """Wrap a variant media playlist URL in a single-variant master playlist."""
+    # BANDWIDTH is required by EXT-X-STREAM-INF; this is a single-variant
+    # wrapper, so the value is only a protocol placeholder estimate.
+    return (
+        "#EXTM3U\n"
+        '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",'
+        f'LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="{subtitle_playlist_url}"\n'
+        '#EXT-X-STREAM-INF:BANDWIDTH=2000000,SUBTITLES="subs"\n'
+        f"{variant_url}\n"
+    )
+
+
+_EXTINF_RE = re.compile(r"#EXTINF:([0-9]+(?:\.[0-9]+)?)")
+
+
+def _hls_media_duration(text: str) -> Optional[int]:
+    """Sum EXTINF durations, rounded up; None when no usable entries exist."""
+    total = sum(value for value in (float(item) for item in _EXTINF_RE.findall(text)) if value > 0)
+    if total <= 0:
+        return None
+    return int(total) if float(total).is_integer() else int(total) + 1
+
+
+def _subtitle_playlist(segment_url: str, duration: int) -> str:
+    """Build a VOD WebVTT rendition playlist around one complete segment."""
+    total = max(1, duration)
+    return (
+        "#EXTM3U\n"
+        f"#EXT-X-TARGETDURATION:{total}\n"
+        "#EXT-X-PLAYLIST-TYPE:VOD\n"
+        f"#EXTINF:{total},\n"
+        f"{segment_url}\n"
+        "#EXT-X-ENDLIST\n"
+    )
 
 
 class _AndroidRelayHTTPServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, handler, *, token: str, referer: str, user_agent: str) -> None:
+    def __init__(
+        self, address, handler, *, token: str, referer: str, user_agent: str,
+        debug: bool = False, log_path: Optional[str] = None,
+        subtitle_target: Optional[str] = None,
+    ) -> None:
         super().__init__(address, handler)
         self.token = token
         self.referer = referer
         self.user_agent = user_agent
+        self.debug = debug
+        self.log_path = log_path
+        self.subtitle_target = subtitle_target
         self.last_activity = time.monotonic()
 
     def relay_url(self, target: str) -> str:
         host, port = self.server_address[:2]
         return f"http://127.0.0.1:{port}/{self.token}/{_relay_encode(target)}"
+
+    def subtitle_relay_url(self, target: str) -> str:
+        host, port = self.server_address[:2]
+        suffix = _subtitle_suffix_for(target)
+        return f"http://127.0.0.1:{port}/{self.token}/subtitle/{_relay_encode(target)}{suffix}"
+
+    def subtitle_playlist_url_for(self, target: str, duration: int) -> str:
+        host, port = self.server_address[:2]
+        suffix = _subtitle_suffix_for(target)
+        total = max(1, int(duration))
+        return f"http://127.0.0.1:{port}/{self.token}/sublist/{total}/{_relay_encode(target)}{suffix}"
+
+    def variant_url_for(self, target: str) -> str:
+        # Same relay route with a flag so the handler serves the raw variant
+        # media playlist instead of wrapping it in a master again.
+        return self.relay_url(target) + "?variant=1"
+
+    def _debug_log(self, message: str) -> None:
+        if not self.debug or not self.log_path:
+            return
+        try:
+            with open(self.log_path, "a", encoding="utf-8") as handle:
+                handle.write(message.rstrip() + "\n")
+                handle.flush()
+        except OSError:
+            pass
 
 
 class _AndroidRelayHandler(http.server.BaseHTTPRequestHandler):
@@ -1456,22 +1581,76 @@ class _AndroidRelayHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         self._serve(send_body=True)
 
-    def _target(self) -> Optional[str]:
+    def _parse_relay_path(self) -> Optional[tuple[str, str, Optional[str], Optional[int]]]:
+        """Return (upstream_target, kind, suffix, duration) or None when invalid."""
         prefix = f"/{self.relay.token}/"
         path = self.path.split("?", 1)[0]
         if not path.startswith(prefix):
             return None
+        rest = path[len(prefix):]
+        kind = "video"
+        duration: Optional[int] = None
+        suffix: Optional[str] = None
+        if rest.startswith("subtitle/"):
+            kind = "subtitle"
+            rest = rest[len("subtitle/"):]
+        elif rest.startswith("sublist/"):
+            kind = "sublist"
+            rest = rest[len("sublist/"):]
+            duration_text, sep, rest = rest.partition("/")
+            if not sep or not duration_text.isdigit():
+                return None
+            duration = int(duration_text)
+        if kind in ("subtitle", "sublist"):
+            for candidate in _SUBTITLE_SUFFIXES:
+                if rest.lower().endswith(candidate):
+                    suffix = candidate
+                    rest = rest[: -len(candidate)]
+                    break
+            if suffix is None:
+                return None
         try:
-            target = _relay_decode(path[len(prefix):])
+            target = _relay_decode(rest)
         except Exception:
             return None
-        return target if urlsplit(target).scheme in {"http", "https"} else None
+        if urlsplit(target).scheme not in {"http", "https"}:
+            return None
+        return target, kind, suffix, duration
+
+    def _target(self) -> Optional[str]:
+        parsed = self._parse_relay_path()
+        return parsed[0] if parsed else None
 
     def _serve(self, *, send_body: bool) -> None:
-        target = self._target()
-        if not target:
+        method = "GET" if send_body else "HEAD"
+        parsed = self._parse_relay_path()
+        if not parsed:
+            self.relay._debug_log(f"[android-relay] video {method} invalid -> 403")
             self.send_error(403)
             return
+        target, kind, sub_suffix, sub_duration = parsed
+        if kind == "sublist":
+            self.relay.last_activity = time.monotonic()
+            playlist = _subtitle_playlist(
+                self.relay.subtitle_relay_url(target), sub_duration or 0,
+            ).encode("utf-8")
+            self.relay._debug_log(
+                f"[android-relay] subtitle {method} playlist -> 200 application/vnd.apple.mpegurl"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+            self.send_header("Content-Length", str(len(playlist)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.close_connection = True
+            self.end_headers()
+            if send_body:
+                self.wfile.write(playlist)
+            return
+        if kind == "subtitle":
+            req_desc = f"subtitle {method} {sub_suffix}"
+        else:
+            req_desc = f"video {method} segment"
         self.relay.last_activity = time.monotonic()
         headers = {
             "User-Agent": self.relay.user_agent,
@@ -1487,7 +1666,6 @@ class _AndroidRelayHandler(http.server.BaseHTTPRequestHandler):
             if value:
                 headers[name] = value
 
-        method = "GET" if send_body else "HEAD"
         req = urllib_request.Request(target, headers=headers, method=method)
         try:
             upstream = urllib_request.urlopen(req, timeout=30)
@@ -1499,12 +1677,15 @@ class _AndroidRelayHandler(http.server.BaseHTTPRequestHandler):
                         urllib_request.Request(target, headers=headers, method="GET"), timeout=30
                     )
                 except Exception as inner:
+                    self.relay._debug_log(f"[android-relay] {req_desc} -> 502")
                     self.send_error(502, str(inner))
                     return
             else:
+                self.relay._debug_log(f"[android-relay] {req_desc} -> {exc.code}")
                 self.send_error(exc.code, str(exc.reason))
                 return
         except Exception as exc:
+            self.relay._debug_log(f"[android-relay] {req_desc} -> 502")
             self.send_error(502, str(exc))
             return
 
@@ -1517,10 +1698,64 @@ class _AndroidRelayHandler(http.server.BaseHTTPRequestHandler):
                 or "mpegurl" in content_type.lower()
             )
 
+            if is_hls and kind == "video":
+                self.relay._debug_log(
+                    f"[android-relay] video {method} hls -> {status} "
+                    f"{content_type.split(';', 1)[0] or 'application/octet-stream'}"
+                )
+
+            if kind == "subtitle":
+                # Subtitle bytes pass through unchanged, but the MIME type is
+                # forced from the relay suffix: some CDNs serve subtitles as
+                # application/octet-stream, which VLC for Android ignores.
+                mime = _subtitle_mime_for_suffix(sub_suffix or ".vtt")
+                raw = upstream.read()
+                self.relay._debug_log(
+                    f"[android-relay] subtitle {method} {sub_suffix} -> {status} {mime.split(';', 1)[0]}"
+                )
+                self.send_response(status)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.close_connection = True
+                self.end_headers()
+                if send_body:
+                    try:
+                        self.wfile.write(raw)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                return
+
             if is_hls and send_body:
                 raw = upstream.read()
                 text = raw.decode("utf-8", "replace")
-                body = _rewrite_hls_manifest(text, final_url, self.relay.relay_url).encode("utf-8")
+                subtitle_url = (
+                    self.relay.subtitle_relay_url(self.relay.subtitle_target)
+                    if self.relay.subtitle_target
+                    else None
+                )
+                variant_request = "variant=1" in urlsplit(self.path).query
+                if "#EXT-X-STREAM-INF" in text:
+                    body = _rewrite_hls_manifest(
+                        text, final_url, self.relay.relay_url, subtitle_url=subtitle_url,
+                    ).encode("utf-8")
+                elif subtitle_url and not variant_request:
+                    duration = _hls_media_duration(text)
+                    target_subtitle = self.relay.subtitle_target
+                    if duration is None or target_subtitle is None:
+                        body = _rewrite_hls_manifest(text, final_url, self.relay.relay_url).encode("utf-8")
+                    else:
+                        playlist_url = self.relay.subtitle_playlist_url_for(target_subtitle, duration)
+                        body = _wrap_hls_media_playlist(
+                            self.relay.variant_url_for(target), playlist_url,
+                        ).encode("utf-8")
+                        self.relay._debug_log(
+                            f"[android-relay] video {method} hls-media-wrapped -> {status} "
+                            "application/vnd.apple.mpegurl"
+                        )
+                else:
+                    body = _rewrite_hls_manifest(text, final_url, self.relay.relay_url).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", content_type or "application/vnd.apple.mpegurl")
                 self.send_header("Content-Length", str(len(body)))
@@ -1530,6 +1765,12 @@ class _AndroidRelayHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+
+            if not is_hls:
+                self.relay._debug_log(
+                    f"[android-relay] video {method} segment -> {status} "
+                    f"{content_type.split(';', 1)[0] or 'application/octet-stream'}"
+                )
 
             self.send_response(status)
             passthrough = (
@@ -1574,19 +1815,30 @@ def run_android_relay(config_path: str) -> int:
     if not token or not str(ready):
         return 2
     referer = str(config.get("referer") or "")
+    subtitle_target = str(config.get("subtitle_target") or "") or None
     user_agent = str(config.get("user_agent") or USER_AGENT)
     idle_timeout = max(60.0, float(config.get("idle_timeout") or 3600))
+    debug = bool(config.get("debug") or False)
+    log_file = str(config.get("log_file") or "") or None
 
     server = _AndroidRelayHTTPServer(
         ("127.0.0.1", 0), _AndroidRelayHandler,
         token=token, referer=referer, user_agent=user_agent,
+        debug=debug, log_path=log_file, subtitle_target=subtitle_target,
     )
+
+    def request_shutdown(_signum: int, _frame: object) -> None:
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, request_shutdown)
     server.timeout = 1.0
+    server._debug_log("[android-relay] started")
     ready.write_text(json.dumps({"port": server.server_address[1], "token": token}), encoding="utf-8")
     try:
         while time.monotonic() - server.last_activity < idle_timeout:
             server.handle_request()
     finally:
+        server._debug_log("[android-relay] stopped")
         server.server_close()
         try:
             ready.unlink()
@@ -1602,6 +1854,13 @@ class AndroidRelayEndpoint:
 
     def url_for(self, target: str) -> str:
         return f"http://127.0.0.1:{self.port}/{self.token}/{_relay_encode(target)}"
+
+    def subtitle_url_for(self, target: str) -> str:
+        # VLC for Android keys subtitle handling off the resource name/type,
+        # so the relayed subtitle URL ends in a cosmetic subtitle suffix.
+        # The suffix is route-only; the upstream URL is never mutated.
+        suffix = _subtitle_suffix_for(target)
+        return f"http://127.0.0.1:{self.port}/{self.token}/subtitle/{_relay_encode(target)}{suffix}"
 
 
 # ---------- player / downloader ----------
@@ -1724,7 +1983,129 @@ class Playback:
             cmd += ["--es", "subtitles_location", subtitle]
         return cmd
 
-    def _start_android_relay(self, referer: str) -> Optional[AndroidRelayEndpoint]:
+    def _android_vlc_explicit_intent(
+        self, url: str, title: str, subtitle: Optional[str],
+    ) -> list[str]:
+        # Diagnostic-only A/B helper: the same VIEW intent but pinned to VLC's
+        # private VideoPlayerActivity instead of package-targeted dispatch.
+        # NOT used in production; ACTION_VIEW + package targeting stays default
+        # unless a live-device A/B proves the explicit activity is required.
+        cmd = [
+            "am", "start", "--user", _android_user_id(),
+            "-a", "android.intent.action.VIEW",
+            "-t", "video/*",
+            "-n", "org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity",
+            "-d", url, "--es", "title", title,
+        ]
+        if subtitle:
+            cmd += ["--es", "subtitles_location", subtitle]
+        return cmd
+
+    def _android_debug(self) -> bool:
+        return bool(getattr(self.args, "android_debug", False))
+
+    def _print_android_intent_debug(
+        self, intent: list[str], subtitle_url: Optional[str], subtitle_suffix: Optional[str],
+    ) -> None:
+        component = "org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity"
+        if "-n" in intent:
+            target = "VLC VideoPlayerActivity"
+        elif "org.videolan.vlc" in intent:
+            target = "VLC package"
+        elif "is.xyz.mpv" in intent:
+            target = "mpv-android package"
+        else:
+            target = "Android resolver"
+        print("Android intent:", file=sys.stderr)
+        print(f"  target: {target}", file=sys.stderr)
+        if "-n" in intent and component not in intent:
+            target = "Android component"
+            print(f"  target: {target}", file=sys.stderr)
+        has_subtitle = "subtitles_location" in intent
+        print(f"  subtitle extra: {'present' if has_subtitle else 'none'}", file=sys.stderr)
+        scheme = urlsplit(subtitle_url).scheme if has_subtitle and subtitle_url else "none"
+        print(f"  subtitle extra scheme: {scheme or 'none'}", file=sys.stderr)
+        suffix = subtitle_suffix if has_subtitle and subtitle_suffix else "none"
+        print(f"  subtitle suffix: {suffix}", file=sys.stderr)
+
+    def _print_android_result_debug(self, proc: subprocess.CompletedProcess[str]) -> None:
+        combined = proc.stdout.strip() or proc.stderr.strip() or "no output"
+        first_line = next((line.strip() for line in combined.splitlines() if line.strip()), "no output")
+        sanitized = re.sub(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s}\]]+", "<redacted-url>", first_line)
+        if len(sanitized) > 240:
+            sanitized = sanitized[:237] + "..."
+        print("Android intent result:", file=sys.stderr)
+        print(f"  return code: {proc.returncode}", file=sys.stderr)
+        print(f"  result: {sanitized}", file=sys.stderr)
+
+    def _download_android_vlc_subtitle(self, source_url: str, referer: str, destination: Path) -> bool:
+        curl = HttpClient().exe
+        if not curl:
+            warn("Could not stage a local subtitle file because curl is unavailable.")
+            return False
+        proc = subprocess.run(
+            [
+                curl, "--fail", "-sS", "-L", "--max-time", "30",
+                "-A", USER_AGENT, "-e", referer, source_url,
+                "-o", str(destination),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return proc.returncode == 0 and destination.is_file() and destination.stat().st_size > 0
+
+    def _prepare_android_vlc_subtitle(self, title: str, source_url: str, referer: str) -> Optional[str]:
+        directory = _android_shared_subtitle_dir()
+        if directory is None:
+            return None
+        safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).strip() or "subtitle"
+        destination = directory / f"ani-py-{safe_title}{_subtitle_suffix_for(source_url)}"
+        try:
+            downloaded = self._download_android_vlc_subtitle(source_url, referer, destination)
+            if not downloaded:
+                warn(f"Could not stage a local subtitle file for {title}.")
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return None
+        except OSError:
+            warn(f"Could not stage a local subtitle file for {title}.")
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        return str(destination)
+
+    def _android_diagnostics(
+        self, requested: str, relay_active: bool, subtitle: Optional[str], subtitle_suffix: Optional[str],
+    ) -> None:
+        # Concise pre-launch report for --android-debug. Never prints signed
+        # upstream URLs, tokens, or file contents.
+        player_label = {"vlc": "VLC", "mpv": "mpv-android"}.get(requested, requested)
+        print("Android playback diagnostics", file=sys.stderr)
+        print(f"  player: {player_label}", file=sys.stderr)
+        print(f"  relay: {'active' if relay_active else 'inactive (direct URL)'}", file=sys.stderr)
+        if not subtitle:
+            print("  subtitle: none", file=sys.stderr)
+            return
+        print("  subtitle: resolved", file=sys.stderr)
+        subtitle_type = (subtitle_suffix or _subtitle_suffix_for(subtitle)).lstrip('.').upper()
+        print(f"  subtitle type: {subtitle_type}", file=sys.stderr)
+        if urlsplit(subtitle).scheme not in {"http", "https"}:
+            print("  subtitle transport: local file", file=sys.stderr)
+            print(f"  subtitle file: {Path(subtitle).name}", file=sys.stderr)
+            print(f"  subtitle suffix: {(subtitle_suffix or _subtitle_suffix_for(subtitle))}", file=sys.stderr)
+        elif relay_active:
+            print("  subtitle transport: localhost relay", file=sys.stderr)
+            print(f"  subtitle relay suffix: {subtitle_suffix or _subtitle_suffix_for(subtitle)}", file=sys.stderr)
+            if self._android_relay_dir is not None:
+                print(f"  relay log: {self._android_relay_dir / 'android-relay.log'}", file=sys.stderr)
+        else:
+            print("  subtitle transport: direct URL", file=sys.stderr)
+
+    def _start_android_relay(self, referer: str, subtitle: Optional[str] = None) -> Optional[AndroidRelayEndpoint]:
         # A loopback relay makes Referer-protected streams usable by Android
         # players without requiring player-specific config or Shizuku. It also
         # rewrites HLS child playlists/segments so every request keeps headers.
@@ -1733,12 +2114,22 @@ class Playback:
         config = root / "config.json"
         ready = root / "ready.json"
         token = secrets.token_urlsafe(18)
+        debug = self._android_debug()
+        log_file = str(root / "android-relay.log") if debug else ""
+        if debug and log_file:
+            try:
+                Path(log_file).write_text("", encoding="utf-8")
+            except OSError:
+                pass
         config.write_text(json.dumps({
             "ready": str(ready),
             "token": token,
             "referer": referer,
+            "subtitle_target": subtitle,
             "user_agent": USER_AGENT,
             "idle_timeout": 3600,
+            "debug": debug,
+            "log_file": log_file,
         }), encoding="utf-8")
         try:
             config.chmod(0o600)
@@ -1799,10 +2190,18 @@ class Playback:
         self._android_relay_dir = None
 
     def _run_android_intent(self, intent: list[str]) -> bool:
+        if self._android_debug():
+            subtitle_url: Optional[str] = None
+            if "subtitles_location" in intent:
+                subtitle_index = intent.index("subtitles_location") + 1
+                subtitle_url = intent[subtitle_index] if subtitle_index < len(intent) else None
+            self._print_android_intent_debug(intent, subtitle_url, _subtitle_suffix_for(subtitle_url) if subtitle_url else None)
         am = shutil.which("am")
         if am:
             direct = [am, *intent[1:]]
             proc = run_capture(direct)
+            if self._android_debug():
+                self._print_android_result_debug(proc)
             if self._android_launch_ok(proc):
                 return True
 
@@ -1812,6 +2211,8 @@ class Playback:
         rish = self._find_rish()
         if rish:
             proc = run_capture([rish, "-c", shlex.join(intent)])
+            if self._android_debug():
+                self._print_android_result_debug(proc)
             if self._android_launch_ok(proc):
                 warn("Direct Termux intent failed; launched through existing rish/Shizuku fallback.")
                 return True
@@ -1832,11 +2233,30 @@ class Playback:
         subtitle: Optional[str],
         referer: str,
     ) -> int:
-        relay = self._start_android_relay(referer) if urlsplit(stream.url).scheme in {"http", "https"} else None
+        relay = self._start_android_relay(referer, subtitle) if urlsplit(stream.url).scheme in {"http", "https"} else None
         video_url = relay.url_for(stream.url) if relay else stream.url
-        subtitle_url = relay.url_for(subtitle) if relay and subtitle else subtitle
-
         requested = self.player.removeprefix("android_")
+        # VLC's subtitle extra is a subtitle-file path. Stage a VLC-readable
+        # local copy when Termux shared storage is available; otherwise retain
+        # the relay URL so playback can continue. mpv-android keeps existing
+        # behavior: shell `am` cannot build its ParcelableArray<Uri> subs extra.
+        subtitle_url: Optional[str] = None
+        subtitle_suffix: Optional[str] = None
+        if subtitle:
+            if relay:
+                subtitle_url = relay.subtitle_url_for(subtitle)
+                subtitle_suffix = _subtitle_suffix_for(subtitle)
+            else:
+                subtitle_url = subtitle
+            if subtitle_url and requested in {"vlc", "auto"}:
+                local_subtitle = self._prepare_android_vlc_subtitle(title, subtitle_url, referer)
+                if local_subtitle:
+                    subtitle_url = local_subtitle
+                else:
+                    warn(f"Continuing with the current subtitle URL for {title}; local subtitle staging failed.")
+
+        if self._android_debug():
+            self._android_diagnostics(requested, relay is not None, subtitle_url or subtitle, subtitle_suffix)
         # `auto` intentionally asks Android first instead of querying packages.
         # This supports VLC, mpv-android, MX Player, Just Player, etc. without
         # brittle `pm path` checks. Explicit vlc/mpv modes pin a package.
@@ -1855,7 +2275,10 @@ class Playback:
                     self._android_launched = True
                     return 0
         else:
-            intent = self._android_intent(requested, video_url, title, subtitle_url)
+            if requested == "vlc" and getattr(self.args, "android_vlc_explicit", False):
+                intent = self._android_vlc_explicit_intent(video_url, title, subtitle_url)
+            else:
+                intent = self._android_intent(requested, video_url, title, subtitle_url)
             if self._run_android_intent(intent):
                 self._android_launched = True
                 return 0
@@ -2567,6 +2990,7 @@ class App:
         print(f"  {sty('Quality', C.DIM)}  {stream.quality}")
         print(f"  {sty('Source', C.DIM)}   {self.providers.get(bundle.provider).display_name}")
         print(f"  {sty('Player', C.DIM)}   {Path(self.playback.player).name if self.playback.player != 'download' else 'download'}")
+        print(f"  {sty('Subtitle', C.DIM)} {'yes' if bundle.subtitle else 'none'}")
         print()
         assert self.playback is not None
         play_fn = self.playback.replace if replace else self.playback.play
@@ -2793,6 +3217,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip", action="store_true", default=os.getenv("ANI_PY_SKIP_INTRO", "0") == "1", help="use ani-skip with mpv")
     parser.add_argument("--no-detach", action="store_true", default=os.getenv("ANI_PY_NO_DETACH", "0") == "1", help="keep player attached")
     parser.add_argument("--exit-after-play", action="store_true", default=os.getenv("ANI_PY_EXIT_AFTER_PLAY", "0") == "1", help="exit after player closes/launches")
+    parser.add_argument(
+        "--android-debug",
+        action="store_true",
+        default=os.getenv("ANI_PY_ANDROID_DEBUG", "0") == "1",
+        help="print Android playback/relay diagnostics to stderr (harmless off Android)",
+    )
+    parser.add_argument(
+        "--android-vlc-explicit",
+        action="store_true",
+        help="diagnostic: target VLC's exported VideoPlayerActivity for subtitle A/B testing",
+    )
     parser.add_argument("--_android-relay-config", help=argparse.SUPPRESS)
     parser.add_argument("-V", "--version", action="version", version=f"{APP_NAME} {VERSION}")
     return parser

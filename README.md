@@ -5,7 +5,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-yellow)
 ![Tools: curl/mpv/fzf/yt-dlp](https://img.shields.io/badge/tools-curl%20%7C%20mpv%20%7C%20fzf%20%7C%20yt--dlp-333)
 
-![ani-py terminal UI](docs/ani-py-banner.png)
+![ani-py terminal UI](docs/screenshots/ani-py-banner.png)
 
 > The image above recreates the current default **fzf** flow: search, episode selection, and playback controls. Exact colors/fonts depend on your terminal theme. `rofi`, `dmenu`, and the numbered fallback intentionally look different.
 
@@ -60,83 +60,29 @@ Beyond that, this repo exists to:
 
 ## Providers and automatic failover
 
-This checkout defaults to HiAnime only. Upstream v0.5.0 ships a
-`HiAnime → Kuhi` default, but the public Kuhi instance is currently
-undeployed and AnimeKai has no trusted domain, so no unverified provider
-belongs in the default automatic chain here. Opt in explicitly:
+Default chain is **HiAnime only** — the public Kuhi instance is currently
+undeployed and AnimeKai has no trusted domain. If HiAnime fails mid-run,
+ani-py can map your title onto a backup and continue there: exact matches
+resolve automatically, ambiguous ones ask you instead of guessing.
 
 ```bash
-./ani-py --provider-order hianime,kuhi "frieren"
-export ANI_PY_PROVIDER_ORDER=hianime,kuhi
+./ani-py "frieren"                                  # default chain
+./ani-py --provider hianime|kuhi|animekai "frieren" # force one
+./ani-py --provider-order kuhi,hianime "frieren"    # reprioritize
+./ani-py --list-providers                           # show configured
 ```
 
-Once opted in, the chain works as upstream describes:
-
-Kuhi is a multi-source API: its current backend races several native anime providers and returns the first usable direct stream. ani-py does **not** trust the configured URL merely because it resolves. Before Kuhi can participate in automatic failover, `KuhiProvider.available()` performs a real extraction preflight against a known episode and requires a direct HTTP(S) media stream. The result is memoized for the current run.
-
-Use ani-py normally:
+Backups are gated, never trusted blindly: Kuhi must pass a live media
+preflight (a real extraction returning a direct playable stream) before it
+joins failover, and AnimeKai needs an explicitly configured mirror:
 
 ```bash
-./ani-py "frieren"
+export ANI_PY_PROVIDER_ORDER=hianime,kuhi             # persist opt-in
+export ANI_PY_KUHI_URL=https://your-instance.example
+ANI_PY_ANIMEKAI_URL=https://your-mirror ./ani-py --provider animekai "frieren"
 ```
 
-If HiAnime fails during search, episode loading, or stream resolution, ani-py can map the selected title to Kuhi and continue there. Exact/high-confidence title matches may be selected automatically; ambiguous matches are shown in your active menu frontend instead of guessed.
-
-Force a provider:
-
-```bash
-./ani-py --provider hianime "frieren"
-./ani-py --provider kuhi "frieren"
-./ani-py --provider animekai "frieren"   # manual/experimental
-```
-
-Change automatic priority:
-
-```bash
-./ani-py --provider-order kuhi,hianime "frieren"
-```
-
-Or set it persistently:
-
-```bash
-export ANI_PY_PROVIDER=auto
-export ANI_PY_PROVIDER_ORDER=hianime
-```
-
-Show configured providers:
-
-```bash
-./ani-py --list-providers
-```
-
-Verify the current Kuhi public instance from your own network before a release:
-
-```bash
-./scripts/check-providers-live.sh
-```
-
-That probe uses the same standard as automatic failover: the API must return JSON containing at least one direct HTTP(S) media stream, not merely a healthy homepage or search response.
-
-### Kuhi backup notes
-
-The default public Kuhi base is `https://anime-scraper-v2.vercel.app`. Kuhi's current API contract exposes AniList-based search, merged episode availability, and stream extraction that races multiple native upstream providers. The public instance can still rate-limit, cold-start, move, or disappear; no third-party streaming backend can be guaranteed permanently.
-
-The important difference from the old AnimeKai default is that automatic failover has a **live media preflight**. If Kuhi cannot resolve a direct playable stream on your machine at that moment, ani-py marks it unavailable and does not pretend the backup is healthy.
-
-For a self-hosted or alternate Kuhi deployment:
-
-```bash
-export ANI_PY_KUHI_URL=https://your-kuhi-instance.example
-```
-
-### AnimeKai status
-
-`AnimeKaiProvider` remains in the code for users who explicitly configure a working compatible mirror, but it is no longer in the default automatic provider order. Its domains have been unstable and its adapter also depends on the external `enc-dec.app` token/decryption service. Treat it as experimental:
-
-```bash
-ANI_PY_ANIMEKAI_URL=https://your-confirmed-compatible-mirror \
-  ./ani-py --provider animekai "frieren"
-```
+Probe a Kuhi instance from your own network with `./scripts/check-providers-live.sh`.
 
 ## Requirements
 
@@ -285,13 +231,32 @@ Playback launch order is intentionally low-friction:
 
 For protected streams, ani-py starts a small stdlib-only relay bound to `127.0.0.1`. The Android player receives the local URL while the relay injects the provider `Referer` and User-Agent upstream and rewrites nested HLS playlists/segments through itself. This avoids the old Android-VLC problem where an intent could launch VLC but could not attach the stream's HTTP referrer. The relay is detached and expires after an idle period, so **Detach & exit** does not immediately break playback.
 
-VLC receives the conventional `subtitles_location` string extra when a subtitle track is available. mpv-android's official subtitle intent uses a `ParcelableArray<Uri>`, which shell `am` cannot construct, so subtitle attachment is currently stronger with VLC than with mpv-android. `--skip` remains unavailable for Android intent players because `ani-skip` returns desktop mpv command-line/script options that cannot be injected through the Android intent API.
+Subtitles ride the relayed HLS playlist as a native subtitle rendition, so they load automatically in both players. mpv-android selects the track on its own; VLC needs one one-time setting before it auto-selects: **Settings → Advanced → custom libVLC options**, add `--sub-language=eng`, then restart VLC. (VLC loads the track without this, but leaves it deselected; subtitle color/size live on the same VLC settings screen.) A staged copy of the subtitle plus the conventional `subtitles_location` string extra remain as fallback. `--skip` remains unavailable for Android intent players because `ani-skip` returns desktop mpv command-line/script options that cannot be injected through the Android intent API.
 
 Environment default:
 
 ```bash
 export ANI_PY_ANDROID_PLAYER=vlc   # auto | vlc | mpv
 ```
+
+### Android in pictures
+
+| Termux picker | VLC playback |
+|---|---|
+| ![episode picker in Termux](docs/screenshots/android/termux-episode-picker.png) | ![One Piece playing in VLC for Android](docs/screenshots/android/vlc-playback.png) |
+| VLC subtitle track | mpv-android playback |
+|---|---|
+| ![English subtitle track listed in VLC](docs/screenshots/android/vlc-subtitle-track.png) | ![One Piece with subtitles in mpv-android](docs/screenshots/android/mpv-playback.png) |
+
+More shots (playback controller, diagnostics, fullscreen frames) live in `docs/screenshots/android/`.
+
+### Android flows on video
+
+Full search → watch runs, recorded on-device (~1 min each):
+
+| VLC flow (`android_auto`) | mpv flow (`--android-player mpv`) |
+|---|---|
+| <video src="docs/clips/android-flow-vlc.mp4" poster="docs/clips/android-flow-vlc-poster.png" width="270" controls preload="none"></video> | <video src="docs/clips/android-flow-mpv.mp4" poster="docs/clips/android-flow-mpv-poster.png" width="270" controls preload="none"></video> |
 
 ## Playback controls
 
@@ -372,32 +337,16 @@ NO_COLOR               disable ANSI colors
 
 The harness uses only the Python standard library. External tools are mocked so CI can verify the exact commands ani-py would execute without actually opening a player or downloading media.
 
-Current coverage includes:
+Current coverage (120 tests) includes:
 
-- CLI/environment parsing
-- episode/range parsing, including reverse/decimal ranges
-- sequential range execution
-- quality selection
-- HiAnime search/episode/stream parsing
-- Kuhi search, AniList-ID mapping, merged episode lists, direct-stream extraction, HLS variant expansion, subtitles, referers, MAL IDs, and deep-preflight behavior
-- AnimeKai parser/contract tests remain for the manual experimental adapter
-- provider-manager search failover
-- end-to-end mocked stream failover between provider adapters
-- conservative exact/fuzzy title matching and ambiguity prompts
-- provider-aware history plus legacy-history migration
-- payload deobfuscation
-- full offline stream-resolution fixture including MAL id, subtitles, and HLS variants
-- curl command construction/status handling
-- fzf / rofi / dmenu / numbered fallback behavior
-- private mpv IPC paths
-- mpv live replace and replay commands
-- VLC, IINA, and custom-player command construction
-- Termux/Android intent routing, optional rish fallback, and Android player pinning
-- exact `ani-skip -q <MAL_ID> -e <episode>` integration and failure paths
-- `yt-dlp` download command construction
-- ffmpeg fallback command construction
-- subtitle download/failure handling
-- missing-tool error paths
+- CLI/environment parsing plus episode, range, and quality selection
+- provider search/episode/stream parsing (HiAnime, Kuhi, AnimeKai)
+- automatic failover, title matching, and history migration
+- menu frontends (fzf/rofi/dmenu/fallback) and mpv IPC control
+- VLC/IINA/custom-player command construction
+- Termux/Android intent routing, subtitle relay, and player pinning
+- `ani-skip`, `yt-dlp`/ffmpeg downloads, and subtitle handling
+- missing-tool and failure-path behavior
 
 Run everything:
 
@@ -448,7 +397,24 @@ ani-py/
 ├── Makefile
 ├── .gitignore
 ├── docs/
-│   └── ani-py-banner.png
+│   ├── clips/                    # screen recordings + poster frames
+│   │   ├── android-flow-vlc.mp4
+│   │   ├── android-flow-vlc-poster.png
+│   │   ├── android-flow-mpv.mp4
+│   │   └── android-flow-mpv-poster.png
+│   └── screenshots/
+│       ├── ani-py-banner.png
+│       └── android/
+│           ├── termux-episode-picker.png
+│           ├── termux-playback-controller.png
+│           ├── termux-vlc-diagnostics.png
+│           ├── vlc-playback.png
+│           ├── vlc-playback-sky.png
+│           ├── vlc-subtitle-track.png
+│           ├── mpv-playback.png
+│           ├── subtitles-rendered.png
+│           ├── video-frame-map.png
+│           └── video-frame-flags.png
 ├── scripts/
 │   ├── build-standalone.sh
 │   ├── check-tools.sh
