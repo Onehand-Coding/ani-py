@@ -199,11 +199,11 @@ flags safely; private socket avoids hijacking the user's mpv.
 **Reason:** `pm path` from an ordinary Termux UID is unreliable and unnecessary for `VIEW` dispatch; Android intents still cannot carry Referer headers, so the relay keeps provider headers inside Termux and rewrites nested HLS child/key/segment URLs through itself on 127.0.0.1 behind a random secret token. A detached child with idle timeout lets `Detach & exit` survive.
 **Alternatives Considered:** Wholesale copy of reference ZIP (rejected: would clobber newer provider defaults); direct intent URLs without relay (rejected: Referer-gated streams fail); killing the Android player on `stop()` (rejected: stopping the local relay is the least invasive action).
 
-### VLC for Android subtitles (0.5.2-rc3 → rc6, live-device verified 2026-09-25)
-**Choice:** Subtitles ride the HLS playlist as an `EXT-X-MEDIA` rendition (`DEFAULT/AUTOSELECT=YES`, `LANGUAGE=en`) served by the relay: master playlists get the rendition injected, variant media playlists get wrapped in a generated single-variant master (`?variant=1` serves the raw variant), and the rendition URI is a `sublist` VOD playlist around the complete file (bare `.vtt` rendition URIs are fetched but unusable by VLC). The staged Download file plus `subtitles_location` extra remain as fallback/manual path only.
-**Reason:** VLC ignores remote-URL `subtitles_location` values and cannot read Termux-staged files directly (shared-storage files stay mode 600, `chmod` ignored) — only SAF picker grants give it access. mpv-android auto-selects the same rendition with no extra setup.
-**Device-side requirement (one time):** VLC → Settings → Advanced → custom libVLC options → `--sub-language=eng`. VLC loads the rendition but only *selects* it when it matches the preferred subtitle language; "Auto load subtitles" alone is not enough. Subtitle color/size are also VLC settings (white/normal recommended).
-**Known limitation:** If the ROM destroys VLC's activity in the background, playback restarts at position 0 on return (external intents carry no resume position); the rendition re-loads automatically, so only the position is lost.
+### Android subtitles (0.5.2-rc3 → rc7, live-device verified 2026-09-25)
+**Choice:** WebVTT subtitles ride the HLS playlist as an `EXT-X-MEDIA` rendition served by the loopback relay. ani-py uses its own `ani-py-subs` group, leaves an existing upstream subtitle topology untouched, and includes language/label metadata only when the provider supplies it. Variant media playlists are wrapped in a generated single-variant master when necessary, and the rendition URI points to a `sublist` VOD playlist around the complete subtitle file.
+**Fallback:** VLC still receives the conventional `subtitles_location` URL extra. Automatic shared-storage staging was removed in rc7 because it created per-episode files and was not the path that made Android subtitles reliable. mpv-android uses the HLS rendition because shell `am` cannot construct its Parcelable subtitle-array extra.
+**Live-device result:** VLC 3.7.1 and mpv-android both played subtitles through the HLS rendition on the project owner's Termux device. On that VLC setup, English auto-selection required the one-time custom libVLC option `--sub-language=eng`; treat this as a tested player/device preference, not a universal VLC requirement.
+**Known limitation:** If the ROM destroys VLC's activity in the background, playback can restart at position 0 on return because the external intent does not carry a resume position.
 
 ---
 
@@ -269,7 +269,7 @@ flags safely; private socket avoids hijacking the user's mpv.
 |---|---|
 | `tests/` | Unit suite (`animekai`, `kuhi`, `app_flow`, `cli`, `download`, `http`, `menu`, `playback`, `players`, `provider`, `provider_manager`, `skip`) |
 | `scripts/` | Test/build/tool-check automation |
-| `docs/` | Banner image used by README |
+| `docs/` | Android, provider, development docs plus screenshots/clips |
 | `dist/` | Standalone build output |
 | `.github/workflows/` | CI pipeline |
 
@@ -278,7 +278,8 @@ flags safely; private socket avoids hijacking the user's mpv.
 |---|---|
 | `ani_py.py` | Entry point + all logic (importable for tests) |
 | `ani-py` | Executable wrapper: `from ani_py import main` |
-| `Makefile` | `test` / `smoke` / `tools` / `build` targets |
+| `Makefile` | test/smoke/tools/build plus installer convenience targets |
+| `install.sh` / `uninstall.sh` | Linux/Unix + Termux user installer lifecycle |
 | `CHANGELOG.md` | Release notes |
 
 **Generated - never edit manually:**
@@ -327,12 +328,14 @@ ANI_PY_DOWNLOAD_DIR=/tmp/x          # redirect downloads
 | Kuhi (API) | Experimental backup via AniList search + stream extraction; deep media preflight required; default public instance currently undeployed |
 | CDN media hosts | HLS segments, subtitle files |
 
-`auto` mode fails over HiAnime → AnimeKai (order via `--provider-order`
-/ `ANI_PY_PROVIDER_ORDER`); base URL overridable via `ANI_PY_ANIMEKAI_URL`.
-As of 2026-09-22 the hardcoded `anikai.to` does not resolve from here and
-reachable mirrors serve anti-bot challenges - live AnimeKai unverified,
-HiAnime path fully working. If `ani-skip` is missing or errors, `--skip`
-warns and plays without skip flags.
+Default `auto` mode currently uses HiAnime only. Kuhi and AnimeKai are
+experimental opt-in providers configured through `--provider-order` /
+`ANI_PY_PROVIDER_ORDER`; AnimeKai additionally requires an explicit
+`ANI_PY_ANIMEKAI_URL` mirror. The previously tested public Kuhi deployment
+is currently undeployed, and no AnimeKai domain is treated as a trusted
+default. Mocked adapter tests are not evidence that either deployment is
+currently live. If `ani-skip` is missing or errors, `--skip` warns and
+plays without skip flags.
 
 **Secrets Location:** None - no keys, no accounts, no `.env`.
 

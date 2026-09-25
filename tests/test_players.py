@@ -10,7 +10,6 @@ def args(**overrides):
     base = dict(
         download=False,
         player=None,
-        vlc=False,
         player_flag=[],
         skip=False,
         no_detach=False,
@@ -38,7 +37,7 @@ class TestPlayers(unittest.TestCase):
         proc = Mock()
         proc.poll.return_value = None
         mock_popen.return_value = proc
-        pb = ani_py.Playback(args(vlc=True))
+        pb = ani_py.Playback(args(player="vlc"))
         rc = pb.play(STREAM, **KW)
         self.assertEqual(rc, 0)
         cmd = mock_popen.call_args.args[0]
@@ -93,7 +92,7 @@ class TestPlayers(unittest.TestCase):
         proc = Mock()
         proc.poll.return_value = None
         mock_popen.return_value = proc
-        pb = ani_py.Playback(args(vlc=True, skip=True))
+        pb = ani_py.Playback(args(player="vlc", skip=True))
         pb.play(STREAM, **KW)
         self.assertIn("only with mpv", mock_warn.call_args.args[0])
 

@@ -23,10 +23,7 @@ def args(**overrides):
     base = dict(
         download=False,
         player=None,
-        vlc=False,
-        android_player="auto",
         android_debug=False,
-        android_vlc_explicit=False,
         player_flag=[],
         skip=False,
         no_detach=False,
@@ -49,8 +46,8 @@ KW: dict[str, Any] = dict(
 
 class TestAndroidIntent(unittest.TestCase):
     @patch("ani_py.is_android_environment", return_value=True)
-    def test_vlc_flag_selects_android_vlc_without_desktop_binary_probe(self, _android):
-        pb = ani_py.Playback(args(vlc=True))
+    def test_unified_player_selects_android_vlc_without_desktop_binary_probe(self, _android):
+        pb = ani_py.Playback(args(player="vlc"))
         self.assertEqual(pb.player, "android_vlc")
 
     @patch("ani_py.is_android_environment", return_value=True)
@@ -60,7 +57,7 @@ class TestAndroidIntent(unittest.TestCase):
 
     @patch("ani_py.is_android_environment", return_value=True)
     def test_vlc_intent_uses_package_and_subtitle_extra(self, _android):
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         cmd = pb._android_intent("vlc", "http://127.0.0.1:123/video", "Title", "http://127.0.0.1:123/sub")
         self.assertIn("org.videolan.vlc", cmd)
         self.assertIn("video/*", cmd)
@@ -69,41 +66,30 @@ class TestAndroidIntent(unittest.TestCase):
 
     @patch("ani_py.is_android_environment", return_value=True)
     def test_mpv_intent_matches_official_package_contract(self, _android):
-        pb = ani_py.Playback(args(android_player="mpv"))
+        pb = ani_py.Playback(args(player="mpv"))
         cmd = pb._android_intent("mpv", "https://example.invalid/master", "Title", None)
         self.assertIn("is.xyz.mpv", cmd)
         self.assertIn("video/any", cmd)
         self.assertNotIn("subtitles_location", cmd)
 
     @patch("ani_py.is_android_environment", return_value=True)
-    def test_explicit_vlc_flag_uses_activity_without_package_target(self, _android):
-        pb = ani_py.Playback(args(android_player="vlc", android_vlc_explicit=True))
-        endpoint = ani_py.AndroidRelayEndpoint(port=43210, token="secret-token")
-        with (
-            patch.object(pb, "_start_android_relay", return_value=endpoint),
-            patch.object(pb, "_run_android_intent", return_value=True) as run_intent,
-        ):
-            self.assertEqual(pb.play(STREAM, **KW), 0)
-        cmd = run_intent.call_args.args[0]
-        component = "org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity"
-        self.assertIn("-n", cmd)
-        self.assertIn(component, cmd)
-        self.assertNotIn("-p", cmd)
-        self.assertIn("subtitles_location", cmd)
-        self.assertTrue(cmd[cmd.index("subtitles_location") + 1].endswith(".vtt"))
-
-    def test_intent_debug_is_sanitized(self):
-        pb = ani_py.Playback(args(android_player="vlc", android_debug=True))
-        cmd = pb._android_vlc_explicit_intent(
+    def test_intent_debug_is_sanitized(self, _android):
+        pb = ani_py.Playback(args(player="vlc", android_debug=True))
+        cmd = pb._android_intent(
+            "vlc",
             "http://127.0.0.1:43210/secret-token/video",
             "Title",
             "http://127.0.0.1:43210/secret-token/subtitle/encoded.vtt",
         )
         output = io.StringIO()
         with redirect_stderr(output):
-            pb._print_android_intent_debug(cmd, "http://127.0.0.1:43210/secret-token/subtitle/encoded.vtt", ".vtt")
+            pb._print_android_intent_debug(
+                cmd,
+                "http://127.0.0.1:43210/secret-token/subtitle/encoded.vtt",
+                ".vtt",
+            )
         text = output.getvalue()
-        self.assertIn("target: VLC VideoPlayerActivity", text)
+        self.assertIn("target: VLC package", text)
         self.assertIn("subtitle extra: present", text)
         self.assertIn("subtitle extra scheme: http", text)
         self.assertIn("subtitle suffix: .vtt", text)
@@ -113,17 +99,18 @@ class TestAndroidIntent(unittest.TestCase):
     @patch.object(ani_py.Playback, "_find_rish", return_value=None)
     @patch("ani_py.run_capture")
     @patch("ani_py.shutil.which", return_value="/data/data/com.termux/files/usr/bin/am")
-    def test_intent_result_debug_reports_return_code_without_url(self, _which, run_capture, _rish):
+    @patch("ani_py.is_android_environment", return_value=True)
+    def test_intent_result_debug_reports_return_code_without_url(self, _android, _which, run_capture, _rish):
         run_capture.return_value = subprocess.CompletedProcess(
             [], 0,
             "Starting: Intent { act=android.intent.action.VIEW dat=http://127.0.0.1:43210/secret-token/video }",
             "",
         )
-        pb = ani_py.Playback(args(android_player="vlc", android_debug=True))
+        pb = ani_py.Playback(args(player="vlc", android_debug=True))
         output = io.StringIO()
         with redirect_stderr(output):
-            ok = pb._run_android_intent(pb._android_vlc_explicit_intent(
-                "http://127.0.0.1:43210/secret-token/video", "Title", None,
+            ok = pb._run_android_intent(pb._android_intent(
+                "vlc", "http://127.0.0.1:43210/secret-token/video", "Title", None,
             ))
         text = output.getvalue()
         self.assertTrue(ok)
@@ -139,7 +126,7 @@ class TestAndroidIntent(unittest.TestCase):
     @patch.object(ani_py.Playback, "_find_rish", return_value="/data/data/com.termux/files/home/rish")
     @patch("ani_py.is_android_environment", return_value=True)
     def test_rish_is_only_used_after_direct_am_failure(self, _android, _rish, which, run, warn):
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         which.side_effect = lambda name: "/data/data/com.termux/files/usr/bin/am" if name == "am" else None
         run.side_effect = [
             subprocess.CompletedProcess([], 1, "", "Failure calling service"),
@@ -158,7 +145,7 @@ class TestAndroidIntent(unittest.TestCase):
     @patch("ani_py.is_android_environment", return_value=True)
     def test_direct_am_success_does_not_touch_rish(self, _android, rish, _which, run):
         run.return_value = subprocess.CompletedProcess([], 0, "Starting: Intent", "")
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         self.assertTrue(pb._run_android_intent(pb._android_intent("vlc", STREAM.url, "Title", None)))
         rish.assert_not_called()
 
@@ -167,7 +154,7 @@ class TestAndroidIntent(unittest.TestCase):
     @patch.object(ani_py.Playback, "_run_android_intent", return_value=False)
     @patch("ani_py.is_android_environment", return_value=True)
     def test_explicit_player_falls_back_to_normal_android_chooser(self, _android, _intent, chooser, _relay):
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         self.assertEqual(pb.play(STREAM, **KW), 0)
         chooser.assert_called_once_with(STREAM.url)
 
@@ -177,9 +164,14 @@ class TestAndroidIntent(unittest.TestCase):
     @patch.object(ani_py.Playback, "_run_android_intent", return_value=False)
     @patch("ani_py.is_android_environment", return_value=True)
     def test_play_android_gives_relay_original_subtitle(self, _android, _intent, chooser, start):
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         self.assertEqual(pb.play(STREAM, **KW), 0)
-        start.assert_called_once_with(KW["referer"], KW["subtitle"])
+        start.assert_called_once_with(
+            KW["referer"],
+            KW["subtitle"],
+            subtitle_language=None,
+            subtitle_label=None,
+        )
 
 
 class TestAndroidRelay(unittest.TestCase):
@@ -202,10 +194,47 @@ class TestAndroidRelay(unittest.TestCase):
             lambda u: "LOCAL:" + u,
             subtitle_url=subtitle_url,
         )
-        self.assertIn('#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs"', out)
+        self.assertIn('#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="ani-py-subs"', out)
         self.assertIn('URI="http://127.0.0.1:43210/token/subtitle/encoded.vtt"', out)
-        self.assertIn('SUBTITLES="subs"', out)
-        self.assertIn('LANGUAGE="en"', out)
+        self.assertIn('SUBTITLES="ani-py-subs"', out)
+        self.assertNotIn("LANGUAGE=", out)
+
+    def test_hls_rewrite_uses_known_subtitle_metadata(self):
+        source = (
+            "#EXTM3U\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=1000000\n"
+            "child.m3u8\n"
+        )
+        out = ani_py._rewrite_hls_manifest(
+            source,
+            "https://cdn.example/master.m3u8",
+            lambda u: "LOCAL:" + u,
+            subtitle_url="http://127.0.0.1/sub.vtt",
+            subtitle_language="es",
+            subtitle_label="Spanish",
+        )
+        self.assertIn('NAME="Spanish"', out)
+        self.assertIn('LANGUAGE="es"', out)
+        self.assertIn('GROUP-ID="ani-py-subs"', out)
+
+    def test_hls_rewrite_preserves_existing_upstream_subtitle_topology(self):
+        source = (
+            "#EXTM3U\n"
+            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="upstream",NAME="English",'
+            'LANGUAGE="en",URI="existing.m3u8"\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=1000000,SUBTITLES="upstream"\n'
+            "child.m3u8\n"
+        )
+        out = ani_py._rewrite_hls_manifest(
+            source,
+            "https://cdn.example/master.m3u8",
+            lambda u: "LOCAL:" + u,
+            subtitle_url="http://127.0.0.1/ani.vtt",
+        )
+        self.assertIn('SUBTITLES="upstream"', out)
+        self.assertNotIn('SUBTITLES="ani-py-subs"', out)
+        self.assertNotIn('GROUP-ID="ani-py-subs"', out)
+        self.assertIn('URI="LOCAL:https://cdn.example/existing.m3u8"', out)
 
     def test_hls_rewrite_does_not_add_subtitle_group_to_media_playlist(self):
         source = "#EXTM3U\n#EXTINF:5,\nseg-1.ts\n"
@@ -265,8 +294,8 @@ class TestAndroidRelay(unittest.TestCase):
         try:
             video_url = relay.relay_url(upstream_base + "/index.m3u8")
             master = urllib.request.urlopen(video_url, timeout=3).read().decode()
-            self.assertIn('#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs"', master)
-            self.assertIn('SUBTITLES="subs"', master)
+            self.assertIn('#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="ani-py-subs"', master)
+            self.assertIn('SUBTITLES="ani-py-subs"', master)
             variant_line = next(
                 line for line in master.splitlines()
                 if line.startswith("http://127.0.0.1:")
@@ -414,7 +443,7 @@ class TestAndroidRelay(unittest.TestCase):
                 line for line in master.splitlines()
                 if line.startswith("#EXT-X-MEDIA:TYPE=SUBTITLES")
             )
-            self.assertIn('SUBTITLES="subs"', master)
+            self.assertIn('SUBTITLES="ani-py-subs"', master)
             subtitle_url = media_line.split('URI="', 1)[1].rstrip('"')
             with urllib.request.urlopen(subtitle_url, timeout=3) as response:
                 self.assertEqual(response.headers.get("Content-Type"), "text/vtt; charset=utf-8")
@@ -590,78 +619,6 @@ class TestAndroidRelay(unittest.TestCase):
         self.assertNotIn("relay-secret-token", log)
 
 
-class TestAndroidLocalSubtitles(unittest.TestCase):
-    LOCAL_SUBTITLE = b"WEBVTT\n\n00:00:01.000 --> 00:00:05.000\nstaged subtitle\n"
-
-    def test_shared_subtitle_directory_requires_initialized_termux_storage(self):
-        with tempfile.TemporaryDirectory() as home:
-            home_path = Path(home)
-            self.assertIsNone(ani_py._android_shared_subtitle_dir(home_path))
-            downloads = home_path / "storage" / "downloads"
-            downloads.mkdir(parents=True)
-            staged = ani_py._android_shared_subtitle_dir(home_path)
-            self.assertIsNotNone(staged)
-            assert staged is not None
-            self.assertEqual(staged, downloads / "ani-py-subtitles")
-            self.assertTrue(staged.is_dir())
-
-    @patch("ani_py.is_android_environment", return_value=True)
-    def test_vlc_stages_local_subtitle_file_instead_of_relay_url(self, _android):
-        pb = ani_py.Playback(args(android_player="vlc"))
-        endpoint = ani_py.AndroidRelayEndpoint(port=43210, token="secret-token")
-        expected_source = endpoint.subtitle_url_for(KW["subtitle"])
-        with tempfile.TemporaryDirectory() as shared:
-            shared_path = Path(shared)
-
-            def fake_download(source_url, referer, destination):
-                self.assertEqual(source_url, expected_source)
-                self.assertEqual(referer, KW["referer"])
-                Path(destination).write_bytes(self.LOCAL_SUBTITLE)
-                return True
-
-            with (
-                patch.object(pb, "_start_android_relay", return_value=endpoint),
-                patch("ani_py._android_shared_subtitle_dir", return_value=shared_path),
-                patch.object(pb, "_download_android_vlc_subtitle", side_effect=fake_download),
-                patch.object(pb, "_run_android_intent", return_value=True) as run_intent,
-            ):
-                self.assertEqual(pb.play(STREAM, **KW), 0)
-            cmd = run_intent.call_args.args[0]
-            subtitle_path = cmd[cmd.index("subtitles_location") + 1]
-            self.assertEqual(Path(subtitle_path).parent, shared_path)
-            self.assertTrue(subtitle_path.endswith(".vtt"), subtitle_path)
-            self.assertNotIn("http", subtitle_path)
-            self.assertEqual(Path(subtitle_path).read_bytes(), self.LOCAL_SUBTITLE)
-
-    @patch("ani_py.is_android_environment", return_value=True)
-    def test_local_subtitle_failure_falls_back_to_relay_url(self, _android):
-        pb = ani_py.Playback(args(android_player="vlc"))
-        endpoint = ani_py.AndroidRelayEndpoint(port=43210, token="secret-token")
-        with (
-            patch.object(pb, "_start_android_relay", return_value=endpoint),
-            patch.object(pb, "_prepare_android_vlc_subtitle", return_value=None),
-            patch.object(pb, "_run_android_intent", return_value=True) as run_intent,
-            patch("ani_py.warn") as warned,
-        ):
-            self.assertEqual(pb.play(STREAM, **KW), 0)
-        cmd = run_intent.call_args.args[0]
-        subtitle_url = cmd[cmd.index("subtitles_location") + 1]
-        self.assertEqual(subtitle_url, endpoint.subtitle_url_for(KW["subtitle"]))
-        self.assertTrue(warned.called)
-
-    def test_local_subtitle_debug_reports_file_transport(self):
-        pb = ani_py.Playback(args(android_player="vlc", android_debug=True))
-        local_path = "/storage/emulated/0/Download/ani-py-subtitles/Frieren_Episode_1.vtt"
-        output = io.StringIO()
-        with redirect_stderr(output):
-            pb._android_diagnostics("vlc", True, local_path, ".vtt")
-        text = output.getvalue()
-        self.assertIn("subtitle transport: local file", text)
-        self.assertIn("Frieren_Episode_1.vtt", text)
-        self.assertIn("subtitle suffix: .vtt", text)
-        self.assertNotIn("subtitle transport: localhost relay", text)
-
-
 class TestAndroidSubtitleRelay(unittest.TestCase):
     WEBVTT = b"WEBVTT\n\n00:00:01.000 --> 00:00:05.000\nani-py Android subtitle test\n"
     SRT = b"1\n00:00:01,000 --> 00:00:05,000\nani-py Android subtitle test\n"
@@ -801,10 +758,11 @@ class TestAndroidSubtitleRelay(unittest.TestCase):
                 exc.close()
             self.assertIn(code, (403, 404), path)
 
-    def test_vlc_intent_subtitle_relay_url_ends_with_extension(self):
+    @patch("ani_py.is_android_environment", return_value=True)
+    def test_vlc_intent_subtitle_relay_url_ends_with_extension(self, _android):
         endpoint = ani_py.AndroidRelayEndpoint(port=43210, token="tok")
         subtitle_url = endpoint.subtitle_url_for("https://cdn.example/sub.vtt")
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         cmd = pb._android_intent("vlc", "http://127.0.0.1:43210/video", "Title", subtitle_url)
         idx = cmd.index("subtitles_location")
         self.assertTrue(cmd[idx + 1].endswith(".vtt"), cmd)

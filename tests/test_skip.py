@@ -10,7 +10,6 @@ def args(**overrides):
     base = dict(
         download=False,
         player="mpv",
-        vlc=False,
         player_flag=[],
         skip=True,
         no_detach=False,

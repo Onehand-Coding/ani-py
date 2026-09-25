@@ -44,6 +44,13 @@ class TestProviderInternals(unittest.TestCase):
         self.assertEqual(ani_py.HianimeProvider._pick_source_url(payload), 'https://cdn.example/master.m3u8')
         self.assertEqual(ani_py.HianimeProvider._pick_subtitle(payload), 'https://sub-2.vtt')
 
+        info = ani_py.HianimeProvider._pick_subtitle_info({
+            "subtitles": [
+                {"src": "https://sub-es.vtt", "default": True, "label": "Spanish", "lang": "spa"}
+            ]
+        })
+        self.assertEqual(info, ("https://sub-es.vtt", "es", "Spanish"))
+
     def test_parse_master_playlist(self):
         master = '''#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
@@ -72,7 +79,12 @@ high/index.m3u8
         encoded = base64.b64encode(embed_url.encode()).decode()
         payload = {
             "src": "https://cdn.example/master.m3u8",
-            "subtitles": [{"src": "https://cdn.example/en.vtt", "default": True}],
+            "subtitles": [{
+                "src": "https://cdn.example/en.vtt",
+                "default": True,
+                "label": "English",
+                "language": "eng",
+            }],
         }
         raw = json.dumps(payload).encode()
         blob = base64.b64encode(
@@ -90,6 +102,8 @@ high/index.m3u8
         self.assertEqual(bundle.mal_id, "52299")
         self.assertEqual(bundle.referer, "https://embed.example/")
         self.assertEqual(bundle.subtitle, "https://cdn.example/en.vtt")
+        self.assertEqual(bundle.subtitle_language, "en")
+        self.assertEqual(bundle.subtitle_label, "English")
         self.assertEqual(bundle.streams[0].quality, "720p")
         self.assertEqual(bundle.streams[0].url, "https://cdn.example/720/index.m3u8")
 
