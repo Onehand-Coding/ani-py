@@ -46,7 +46,7 @@ KW: dict[str, Any] = dict(
 
 class TestAndroidIntent(unittest.TestCase):
     @patch("ani_py.is_android_environment", return_value=True)
-    def test_vlc_flag_selects_android_vlc_without_desktop_binary_probe(self, _android):
+    def test_unified_player_selects_android_vlc_without_desktop_binary_probe(self, _android):
         pb = ani_py.Playback(args(player="vlc"))
         self.assertEqual(pb.player, "android_vlc")
 
@@ -54,6 +54,12 @@ class TestAndroidIntent(unittest.TestCase):
     def test_default_android_mode_uses_auto_intent_dispatch(self, _android):
         pb = ani_py.Playback(args())
         self.assertEqual(pb.player, "android_auto")
+
+    @patch("ani_py.is_android_environment", return_value=True)
+    def test_legacy_android_player_env_remains_compatible(self, _android):
+        with patch.dict("os.environ", {"ANI_PY_ANDROID_PLAYER": "mpv"}, clear=False):
+            pb = ani_py.Playback(args())
+        self.assertEqual(pb.player, "android_mpv")
 
     @patch("ani_py.is_android_environment", return_value=True)
     def test_vlc_intent_uses_package_and_subtitle_extra(self, _android):
