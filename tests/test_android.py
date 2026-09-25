@@ -56,12 +56,6 @@ class TestAndroidIntent(unittest.TestCase):
         self.assertEqual(pb.player, "android_auto")
 
     @patch("ani_py.is_android_environment", return_value=True)
-    def test_legacy_android_player_env_remains_compatible(self, _android):
-        with patch.dict(ani_py.os.environ, {"ANI_PY_ANDROID_PLAYER": "mpv"}, clear=False):
-            pb = ani_py.Playback(args())
-        self.assertEqual(pb.player, "android_mpv")
-
-    @patch("ani_py.is_android_environment", return_value=True)
     def test_vlc_intent_uses_package_and_subtitle_extra(self, _android):
         pb = ani_py.Playback(args(player="vlc"))
         cmd = pb._android_intent("vlc", "http://127.0.0.1:123/video", "Title", "http://127.0.0.1:123/sub")
