@@ -39,10 +39,12 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ns.provider, "auto")
         self.assertEqual(ns.provider_order, "hianime")
 
-    def test_android_options_parse(self):
+    def test_player_option_is_unified_short_and_long(self):
         parser = ani_py.build_parser()
-        ns = parser.parse_args(["--android-player", "vlc", "frieren"])
-        self.assertEqual(ns.android_player, "vlc")
+        ns = parser.parse_args(["-p", "vlc", "frieren"])
+        self.assertEqual(ns.player, "vlc")
+        ns = parser.parse_args(["--player", "mpv", "frieren"])
+        self.assertEqual(ns.player, "mpv")
 
     def test_android_debug_flag_defaults_off_and_parses(self):
         parser = ani_py.build_parser()
@@ -51,18 +53,18 @@ class TestCLI(unittest.TestCase):
         ns = parser.parse_args(["--android-debug", "frieren"])
         self.assertTrue(ns.android_debug)
 
-    def test_android_player_option_and_environment_default(self):
-        with patch.dict(os.environ, {"ANI_PY_ANDROID_PLAYER": "vlc"}, clear=False):
+    def test_player_environment_default_and_legacy_aliases(self):
+        with patch.dict(os.environ, {"ANI_PY_PLAYER": "vlc"}, clear=False):
             parser = ani_py.build_parser()
             ns = parser.parse_args(["frieren"])
-        self.assertEqual(ns.android_player, "vlc")
+        self.assertEqual(ns.player, "vlc")
 
         parser = ani_py.build_parser()
-        ns = parser.parse_args(["--android-player", "mpv", "frieren"])
-        self.assertEqual(ns.android_player, "mpv")
+        self.assertEqual(parser.parse_args(["-v", "frieren"]).player, "vlc")
+        self.assertEqual(parser.parse_args(["--android-player", "mpv", "frieren"]).player, "mpv")
 
     def test_version_is_current(self):
-        self.assertEqual(ani_py.VERSION, "0.5.2-rc7")
+        self.assertEqual(ani_py.VERSION, "0.5.2-rc8")
 
     def test_default_provider_order_is_hianime_only(self):
         # No unverified provider belongs in the default automatic chain:
