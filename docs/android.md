@@ -12,16 +12,21 @@ pkg install python curl fzf termux-tools termux-am
 Install VLC for Android or mpv-android from your preferred app source.
 
 ```sh
-ani-py "frieren"                       # Android resolver/default player
-ani-py -v "frieren"                    # VLC
-ani-py --android-player mpv "frieren"  # mpv-android
+ani-py "frieren"             # Android resolver/default player
+ani-py -p vlc "frieren"      # VLC
+ani-py -p mpv "frieren"      # mpv-android
 ```
 
-Set a persistent preference with:
+Use the same player selector on desktop and Android:
 
 ```sh
-export ANI_PY_ANDROID_PLAYER=vlc   # auto | vlc | mpv
+ani-py -p vlc "frieren"
+ani-py -p mpv "frieren"
 ```
+
+`ANI_PY_PLAYER` is the corresponding environment default. The older
+`ANI_PY_ANDROID_PLAYER`, `--android-player`, and `-v/--vlc` forms are
+accepted only as compatibility aliases.
 
 ## Playback model
 
@@ -54,7 +59,7 @@ ani-py carries subtitle language/label metadata when the provider supplies it. I
 ## Diagnostics
 
 ```sh
-ani-py --android-debug -v -e 1 "frieren"
+ani-py --android-debug -p vlc -e 1 "frieren"
 ```
 
 Debug mode reports the selected player, relay state, subtitle transport, sanitized intent result, and a relay log path. Signed provider URLs and relay tokens are not printed.
