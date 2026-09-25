@@ -23,8 +23,6 @@ def args(**overrides):
     base = dict(
         download=False,
         player=None,
-        vlc=False,
-        android_player="auto",
         android_debug=False,
         player_flag=[],
         skip=False,
@@ -49,7 +47,7 @@ KW: dict[str, Any] = dict(
 class TestAndroidIntent(unittest.TestCase):
     @patch("ani_py.is_android_environment", return_value=True)
     def test_vlc_flag_selects_android_vlc_without_desktop_binary_probe(self, _android):
-        pb = ani_py.Playback(args(vlc=True))
+        pb = ani_py.Playback(args(player="vlc"))
         self.assertEqual(pb.player, "android_vlc")
 
     @patch("ani_py.is_android_environment", return_value=True)
@@ -59,7 +57,7 @@ class TestAndroidIntent(unittest.TestCase):
 
     @patch("ani_py.is_android_environment", return_value=True)
     def test_vlc_intent_uses_package_and_subtitle_extra(self, _android):
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         cmd = pb._android_intent("vlc", "http://127.0.0.1:123/video", "Title", "http://127.0.0.1:123/sub")
         self.assertIn("org.videolan.vlc", cmd)
         self.assertIn("video/*", cmd)
@@ -68,7 +66,7 @@ class TestAndroidIntent(unittest.TestCase):
 
     @patch("ani_py.is_android_environment", return_value=True)
     def test_mpv_intent_matches_official_package_contract(self, _android):
-        pb = ani_py.Playback(args(android_player="mpv"))
+        pb = ani_py.Playback(args(player="mpv"))
         cmd = pb._android_intent("mpv", "https://example.invalid/master", "Title", None)
         self.assertIn("is.xyz.mpv", cmd)
         self.assertIn("video/any", cmd)
@@ -76,7 +74,7 @@ class TestAndroidIntent(unittest.TestCase):
 
     @patch("ani_py.is_android_environment", return_value=True)
     def test_intent_debug_is_sanitized(self, _android):
-        pb = ani_py.Playback(args(android_player="vlc", android_debug=True))
+        pb = ani_py.Playback(args(player="vlc", android_debug=True))
         cmd = pb._android_intent(
             "vlc",
             "http://127.0.0.1:43210/secret-token/video",
@@ -108,7 +106,7 @@ class TestAndroidIntent(unittest.TestCase):
             "Starting: Intent { act=android.intent.action.VIEW dat=http://127.0.0.1:43210/secret-token/video }",
             "",
         )
-        pb = ani_py.Playback(args(android_player="vlc", android_debug=True))
+        pb = ani_py.Playback(args(player="vlc", android_debug=True))
         output = io.StringIO()
         with redirect_stderr(output):
             ok = pb._run_android_intent(pb._android_intent(
@@ -128,7 +126,7 @@ class TestAndroidIntent(unittest.TestCase):
     @patch.object(ani_py.Playback, "_find_rish", return_value="/data/data/com.termux/files/home/rish")
     @patch("ani_py.is_android_environment", return_value=True)
     def test_rish_is_only_used_after_direct_am_failure(self, _android, _rish, which, run, warn):
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         which.side_effect = lambda name: "/data/data/com.termux/files/usr/bin/am" if name == "am" else None
         run.side_effect = [
             subprocess.CompletedProcess([], 1, "", "Failure calling service"),
@@ -147,7 +145,7 @@ class TestAndroidIntent(unittest.TestCase):
     @patch("ani_py.is_android_environment", return_value=True)
     def test_direct_am_success_does_not_touch_rish(self, _android, rish, _which, run):
         run.return_value = subprocess.CompletedProcess([], 0, "Starting: Intent", "")
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         self.assertTrue(pb._run_android_intent(pb._android_intent("vlc", STREAM.url, "Title", None)))
         rish.assert_not_called()
 
@@ -156,7 +154,7 @@ class TestAndroidIntent(unittest.TestCase):
     @patch.object(ani_py.Playback, "_run_android_intent", return_value=False)
     @patch("ani_py.is_android_environment", return_value=True)
     def test_explicit_player_falls_back_to_normal_android_chooser(self, _android, _intent, chooser, _relay):
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         self.assertEqual(pb.play(STREAM, **KW), 0)
         chooser.assert_called_once_with(STREAM.url)
 
@@ -166,7 +164,7 @@ class TestAndroidIntent(unittest.TestCase):
     @patch.object(ani_py.Playback, "_run_android_intent", return_value=False)
     @patch("ani_py.is_android_environment", return_value=True)
     def test_play_android_gives_relay_original_subtitle(self, _android, _intent, chooser, start):
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         self.assertEqual(pb.play(STREAM, **KW), 0)
         start.assert_called_once_with(
             KW["referer"],
@@ -764,7 +762,7 @@ class TestAndroidSubtitleRelay(unittest.TestCase):
     def test_vlc_intent_subtitle_relay_url_ends_with_extension(self, _android):
         endpoint = ani_py.AndroidRelayEndpoint(port=43210, token="tok")
         subtitle_url = endpoint.subtitle_url_for("https://cdn.example/sub.vtt")
-        pb = ani_py.Playback(args(android_player="vlc"))
+        pb = ani_py.Playback(args(player="vlc"))
         cmd = pb._android_intent("vlc", "http://127.0.0.1:43210/video", "Title", subtitle_url)
         idx = cmd.index("subtitles_location")
         self.assertTrue(cmd[idx + 1].endswith(".vtt"), cmd)
