@@ -14,7 +14,6 @@ def args(**overrides):
     base = dict(
         download=True,
         player=None,
-        vlc=False,
         player_flag=[],
         skip=False,
         no_detach=False,
