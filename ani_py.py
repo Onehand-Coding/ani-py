@@ -39,7 +39,7 @@ from urllib import request as urllib_request
 from urllib.parse import quote_plus, urlencode, urljoin, urlsplit
 
 APP_NAME = "ani-py"
-VERSION = "0.5.2-rc8"
+VERSION = "0.5.2-rc9"
 BASE_URL = "https://hianime.at"
 ANIMEKAI_BASE_URL = ""  # no trusted default; set ANI_PY_ANIMEKAI_URL explicitly
 KUHI_BASE_URL = "https://anime-scraper-v2.vercel.app"
@@ -2006,7 +2006,7 @@ class Playback:
         # with `pm path`, which is unreliable from an ordinary Termux UID.
         requested_player = (self.args.player or "").strip()
         if is_android_environment():
-            requested = requested_player or os.getenv("ANI_PY_ANDROID_PLAYER", "auto")
+            requested = requested_player or "auto"
             requested = requested.lower()
             if requested not in {"auto", "vlc", "mpv"}:
                 fail("On Termux/Android, --player supports: auto, vlc, mpv.")
@@ -3281,23 +3281,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--player",
         default=os.getenv("ANI_PY_PLAYER"),
         help="player: mpv, vlc, iina, auto, or a custom executable (Android: auto, vlc, mpv)",
-    )
-    # Compatibility aliases from pre-0.5.2 releases. Keep parsing them for now,
-    # but expose --player/-p as the single documented player interface.
-    parser.add_argument(
-        "-v", "--vlc",
-        dest="player",
-        action="store_const",
-        const="vlc",
-        default=argparse.SUPPRESS,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--android-player",
-        dest="player",
-        choices=["auto", "vlc", "mpv"],
-        default=argparse.SUPPRESS,
-        help=argparse.SUPPRESS,
     )
     parser.add_argument("--player-flag", action="append", default=[], help="extra player argument (repeatable; use --player-flag='--flag' for dash-flags)")
     parser.add_argument("--ipc-socket", help="mpv IPC socket path (default: private per ani-py process)")
