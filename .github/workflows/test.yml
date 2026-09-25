@@ -21,6 +21,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Check installer scripts
+        run: sh -n install.sh uninstall.sh
+
       - name: Compile
         run: python -m py_compile ani_py.py ani-py
 
