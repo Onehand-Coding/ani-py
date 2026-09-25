@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.5.2-rc8)
+## Unreleased (0.5.2-rc9)
 
 - Kept the default automatic provider order at `hianime` only; Kuhi and
   AnimeKai remain experimental opt-in providers.
@@ -15,8 +15,8 @@
   `--android-debug` for sanitized intent/relay troubleshooting.
 - Unified player selection under `-p/--player` on desktop and Android:
   `-p vlc`, `-p mpv`, and `-p auto` now mean the same thing across
-  platforms. Older `-v/--vlc` and `--android-player` forms remain hidden
-  compatibility aliases for this release.
+  platforms. Removed the older `-v/--vlc`, `--android-player`, and
+  `ANI_PY_ANDROID_PLAYER` interfaces so there is one player contract.
 - Fixed Python 3.10/3.11 compatibility in the IINA subtitle argument path and
   fixed Android tests so clean CI runners do not require desktop media players.
 - Added `install.sh` / `uninstall.sh` with Linux/Unix and Termux defaults;
