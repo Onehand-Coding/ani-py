@@ -1,4 +1,4 @@
-.PHONY: test smoke tools build
+.PHONY: test smoke tools build install uninstall
 
 test:
 	./scripts/run-tests.sh
@@ -11,3 +11,9 @@ tools:
 
 build:
 	./scripts/build-standalone.sh
+
+install:
+	./install.sh
+
+uninstall:
+	./uninstall.sh
