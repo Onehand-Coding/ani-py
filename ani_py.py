@@ -39,7 +39,7 @@ from urllib import request as urllib_request
 from urllib.parse import quote_plus, urlencode, urljoin, urlsplit
 
 APP_NAME = "ani-py"
-VERSION = "0.5.2-rc6"
+VERSION = "0.5.2-rc7"
 BASE_URL = "https://hianime.at"
 ANIMEKAI_BASE_URL = ""  # no trusted default; set ANI_PY_ANIMEKAI_URL explicitly
 KUHI_BASE_URL = "https://anime-scraper-v2.vercel.app"
@@ -151,6 +151,8 @@ class StreamBundle:
     referer: str
     mal_id: Optional[str]
     provider: str = "unknown"
+    subtitle_language: Optional[str] = None
+    subtitle_label: Optional[str] = None
 
 
 @dataclasses.dataclass
@@ -475,25 +477,71 @@ class HianimeProvider(Provider):
         return None
 
     @staticmethod
-    def _pick_subtitle(payload: object) -> Optional[str]:
+    def _subtitle_language(value: object) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        text = value.strip().lower().replace("_", "-")
+        if not text:
+            return None
+        aliases = {
+            "english": "en",
+            "eng": "en",
+            "en-us": "en",
+            "en-gb": "en",
+            "japanese": "ja",
+            "jpn": "ja",
+            "spanish": "es",
+            "spa": "es",
+            "french": "fr",
+            "fre": "fr",
+            "fra": "fr",
+            "german": "de",
+            "ger": "de",
+            "deu": "de",
+            "portuguese": "pt",
+            "por": "pt",
+        }
+        if text in aliases:
+            return aliases[text]
+        if re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2,4})?", text):
+            return text.split("-", 1)[0]
+        return None
+
+    @staticmethod
+    def _pick_subtitle_info(payload: object) -> tuple[Optional[str], Optional[str], Optional[str]]:
         if isinstance(payload, dict):
             subtitles = payload.get("subtitles")
             if isinstance(subtitles, list):
-                preferred = [x for x in subtitles if isinstance(x, dict) and x.get("default")]
-                for item in preferred + [x for x in subtitles if isinstance(x, dict)]:
-                    src = item.get("src")
-                    if isinstance(src, str) and src:
-                        return src
+                items = [x for x in subtitles if isinstance(x, dict)]
+                preferred = [x for x in items if x.get("default")]
+                for item in preferred + [x for x in items if x not in preferred]:
+                    src = item.get("src") or item.get("file") or item.get("url")
+                    if not isinstance(src, str) or not src:
+                        continue
+                    label_obj = item.get("label") or item.get("name")
+                    label = label_obj.strip() if isinstance(label_obj, str) and label_obj.strip() else None
+                    language = None
+                    for key in ("language", "lang", "srclang"):
+                        language = HianimeProvider._subtitle_language(item.get(key))
+                        if language:
+                            break
+                    if not language:
+                        language = HianimeProvider._subtitle_language(label)
+                    return src, language, label
             for value in payload.values():
-                hit = HianimeProvider._pick_subtitle(value)
-                if hit:
+                hit = HianimeProvider._pick_subtitle_info(value)
+                if hit[0]:
                     return hit
         elif isinstance(payload, list):
             for value in payload:
-                hit = HianimeProvider._pick_subtitle(value)
-                if hit:
+                hit = HianimeProvider._pick_subtitle_info(value)
+                if hit[0]:
                     return hit
-        return None
+        return None, None, None
+
+    @staticmethod
+    def _pick_subtitle(payload: object) -> Optional[str]:
+        return HianimeProvider._pick_subtitle_info(payload)[0]
 
     @staticmethod
     def _parse_master(master: str, master_url: str) -> list[Stream]:
@@ -561,7 +609,7 @@ class HianimeProvider(Provider):
         master_url = self._pick_source_url(payload)
         if not master_url:
             raise StreamNotFound("HiAnime payload contained no HLS source.")
-        subtitle = self._pick_subtitle(payload)
+        subtitle, subtitle_language, subtitle_label = self._pick_subtitle_info(payload)
         try:
             master = self.http.get(master_url, referer=referer)
         except HttpError as exc:
@@ -570,7 +618,13 @@ class HianimeProvider(Provider):
         if not streams:
             streams = [Stream(quality="auto", url=master_url)]
         return StreamBundle(
-            streams=streams, subtitle=subtitle, referer=referer, mal_id=mal_id, provider=self.name
+            streams=streams,
+            subtitle=subtitle,
+            referer=referer,
+            mal_id=mal_id,
+            provider=self.name,
+            subtitle_language=subtitle_language,
+            subtitle_label=subtitle_label,
         )
 
 
@@ -1427,30 +1481,52 @@ def _subtitle_mime_for_suffix(suffix: str) -> str:
     return _SUBTITLE_MIME.get(suffix.lower(), "text/vtt; charset=utf-8")
 
 
-_ANDROID_SHARED_SUBTITLE_DIRNAME = "ani-py-subtitles"
+def _hls_attr(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _android_shared_subtitle_dir(home: Optional[Path] = None) -> Optional[Path]:
-    """Return Termux shared storage for VLC subtitle files, when available."""
-    downloads = (home or Path.home()) / "storage" / "downloads"
-    if not downloads.is_dir():
-        return None
-    target = downloads / _ANDROID_SHARED_SUBTITLE_DIRNAME
-    try:
-        target.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
-    return target
+_ANDROID_SUBTITLE_GROUP = "ani-py-subs"
+
+
+def _subtitle_media_tag(
+    subtitle_url: str,
+    *,
+    language: Optional[str] = None,
+    label: Optional[str] = None,
+) -> str:
+    name = label or ("English" if language == "en" else "External")
+    attrs = [
+        "TYPE=SUBTITLES",
+        f'GROUP-ID="{_ANDROID_SUBTITLE_GROUP}"',
+        f'NAME="{_hls_attr(name)}"',
+    ]
+    if language:
+        attrs.append(f'LANGUAGE="{_hls_attr(language)}"')
+    attrs += [
+        "DEFAULT=YES",
+        "AUTOSELECT=YES",
+        f'URI="{_hls_attr(subtitle_url)}"',
+    ]
+    return "#EXT-X-MEDIA:" + ",".join(attrs)
 
 
 def _rewrite_hls_manifest(
-    manifest: str, base_url: str, localize, subtitle_url: Optional[str] = None,
+    manifest: str,
+    base_url: str,
+    localize,
+    subtitle_url: Optional[str] = None,
+    subtitle_language: Optional[str] = None,
+    subtitle_label: Optional[str] = None,
 ) -> str:
-    """Route every remote HLS URI back through the localhost relay."""
+    """Route remote HLS URIs through localhost and safely attach one subtitle rendition."""
     uri_attr = re.compile(r'URI="([^"]+)"')
     out: list[str] = []
     has_stream_inf = False
-    upstream_has_subtitles = "SUBTITLES=" in manifest
+    upstream_has_subtitles = bool(
+        re.search(r"#EXT-X-MEDIA:[^\n\r]*TYPE=SUBTITLES", manifest, re.IGNORECASE)
+        or re.search(r"SUBTITLES\s*=", manifest, re.IGNORECASE)
+    )
+    inject_subtitle = bool(subtitle_url) and not upstream_has_subtitles
 
     def proxied(value: str) -> str:
         absolute = urljoin(base_url, value)
@@ -1460,17 +1536,19 @@ def _rewrite_hls_manifest(
         line = raw.rstrip("\r")
         if line.startswith("#EXT-X-STREAM-INF"):
             has_stream_inf = True
-            if subtitle_url and "SUBTITLES=" not in line:
-                line = f'{line},SUBTITLES="subs"'
+            if inject_subtitle and "SUBTITLES=" not in line:
+                line = f'{line},SUBTITLES="{_ANDROID_SUBTITLE_GROUP}"'
         if line.startswith("#"):
             line = uri_attr.sub(lambda m: f'URI="{proxied(m.group(1))}"', line)
         elif line.strip():
             line = proxied(line.strip())
         out.append(line)
-    if subtitle_url and has_stream_inf and not upstream_has_subtitles:
-        media = (
-            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",'
-            f'LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="{subtitle_url}"'
+
+    if inject_subtitle and has_stream_inf and subtitle_url:
+        media = _subtitle_media_tag(
+            subtitle_url,
+            language=subtitle_language,
+            label=subtitle_label,
         )
         if out and out[0] == "#EXTM3U":
             out.insert(1, media)
@@ -1479,15 +1557,25 @@ def _rewrite_hls_manifest(
     return "\n".join(out) + ("\n" if manifest.endswith(("\n", "\r")) else "")
 
 
-def _wrap_hls_media_playlist(variant_url: str, subtitle_playlist_url: str) -> str:
+def _wrap_hls_media_playlist(
+    variant_url: str,
+    subtitle_playlist_url: str,
+    *,
+    subtitle_language: Optional[str] = None,
+    subtitle_label: Optional[str] = None,
+) -> str:
     """Wrap a variant media playlist URL in a single-variant master playlist."""
+    media = _subtitle_media_tag(
+        subtitle_playlist_url,
+        language=subtitle_language,
+        label=subtitle_label,
+    )
     # BANDWIDTH is required by EXT-X-STREAM-INF; this is a single-variant
     # wrapper, so the value is only a protocol placeholder estimate.
     return (
         "#EXTM3U\n"
-        '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",'
-        f'LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="{subtitle_playlist_url}"\n'
-        '#EXT-X-STREAM-INF:BANDWIDTH=2000000,SUBTITLES="subs"\n'
+        f"{media}\n"
+        f'#EXT-X-STREAM-INF:BANDWIDTH=2000000,SUBTITLES="{_ANDROID_SUBTITLE_GROUP}"\n'
         f"{variant_url}\n"
     )
 
@@ -1524,6 +1612,8 @@ class _AndroidRelayHTTPServer(http.server.ThreadingHTTPServer):
         self, address, handler, *, token: str, referer: str, user_agent: str,
         debug: bool = False, log_path: Optional[str] = None,
         subtitle_target: Optional[str] = None,
+        subtitle_language: Optional[str] = None,
+        subtitle_label: Optional[str] = None,
     ) -> None:
         super().__init__(address, handler)
         self.token = token
@@ -1532,6 +1622,8 @@ class _AndroidRelayHTTPServer(http.server.ThreadingHTTPServer):
         self.debug = debug
         self.log_path = log_path
         self.subtitle_target = subtitle_target
+        self.subtitle_language = subtitle_language
+        self.subtitle_label = subtitle_label
         self.last_activity = time.monotonic()
 
     def relay_url(self, target: str) -> str:
@@ -1730,15 +1822,26 @@ class _AndroidRelayHandler(http.server.BaseHTTPRequestHandler):
             if is_hls and send_body:
                 raw = upstream.read()
                 text = raw.decode("utf-8", "replace")
-                subtitle_url = (
-                    self.relay.subtitle_relay_url(self.relay.subtitle_target)
+                hls_subtitle_target = (
+                    self.relay.subtitle_target
                     if self.relay.subtitle_target
+                    and _subtitle_suffix_for(self.relay.subtitle_target) == ".vtt"
+                    else None
+                )
+                subtitle_url = (
+                    self.relay.subtitle_relay_url(hls_subtitle_target)
+                    if hls_subtitle_target
                     else None
                 )
                 variant_request = "variant=1" in urlsplit(self.path).query
                 if "#EXT-X-STREAM-INF" in text:
                     body = _rewrite_hls_manifest(
-                        text, final_url, self.relay.relay_url, subtitle_url=subtitle_url,
+                        text,
+                        final_url,
+                        self.relay.relay_url,
+                        subtitle_url=subtitle_url,
+                        subtitle_language=self.relay.subtitle_language,
+                        subtitle_label=self.relay.subtitle_label,
                     ).encode("utf-8")
                 elif subtitle_url and not variant_request:
                     duration = _hls_media_duration(text)
@@ -1748,7 +1851,10 @@ class _AndroidRelayHandler(http.server.BaseHTTPRequestHandler):
                     else:
                         playlist_url = self.relay.subtitle_playlist_url_for(target_subtitle, duration)
                         body = _wrap_hls_media_playlist(
-                            self.relay.variant_url_for(target), playlist_url,
+                            self.relay.variant_url_for(target),
+                            playlist_url,
+                            subtitle_language=self.relay.subtitle_language,
+                            subtitle_label=self.relay.subtitle_label,
                         ).encode("utf-8")
                         self.relay._debug_log(
                             f"[android-relay] video {method} hls-media-wrapped -> {status} "
@@ -1816,6 +1922,8 @@ def run_android_relay(config_path: str) -> int:
         return 2
     referer = str(config.get("referer") or "")
     subtitle_target = str(config.get("subtitle_target") or "") or None
+    subtitle_language = str(config.get("subtitle_language") or "") or None
+    subtitle_label = str(config.get("subtitle_label") or "") or None
     user_agent = str(config.get("user_agent") or USER_AGENT)
     idle_timeout = max(60.0, float(config.get("idle_timeout") or 3600))
     debug = bool(config.get("debug") or False)
@@ -1824,7 +1932,11 @@ def run_android_relay(config_path: str) -> int:
     server = _AndroidRelayHTTPServer(
         ("127.0.0.1", 0), _AndroidRelayHandler,
         token=token, referer=referer, user_agent=user_agent,
-        debug=debug, log_path=log_file, subtitle_target=subtitle_target,
+        debug=debug,
+        log_path=log_file,
+        subtitle_target=subtitle_target,
+        subtitle_language=subtitle_language,
+        subtitle_label=subtitle_label,
     )
 
     def request_shutdown(_signum: int, _frame: object) -> None:
@@ -1983,24 +2095,6 @@ class Playback:
             cmd += ["--es", "subtitles_location", subtitle]
         return cmd
 
-    def _android_vlc_explicit_intent(
-        self, url: str, title: str, subtitle: Optional[str],
-    ) -> list[str]:
-        # Diagnostic-only A/B helper: the same VIEW intent but pinned to VLC's
-        # private VideoPlayerActivity instead of package-targeted dispatch.
-        # NOT used in production; ACTION_VIEW + package targeting stays default
-        # unless a live-device A/B proves the explicit activity is required.
-        cmd = [
-            "am", "start", "--user", _android_user_id(),
-            "-a", "android.intent.action.VIEW",
-            "-t", "video/*",
-            "-n", "org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity",
-            "-d", url, "--es", "title", title,
-        ]
-        if subtitle:
-            cmd += ["--es", "subtitles_location", subtitle]
-        return cmd
-
     def _android_debug(self) -> bool:
         return bool(getattr(self.args, "android_debug", False))
 
@@ -2038,46 +2132,6 @@ class Playback:
         print(f"  return code: {proc.returncode}", file=sys.stderr)
         print(f"  result: {sanitized}", file=sys.stderr)
 
-    def _download_android_vlc_subtitle(self, source_url: str, referer: str, destination: Path) -> bool:
-        curl = HttpClient().exe
-        if not curl:
-            warn("Could not stage a local subtitle file because curl is unavailable.")
-            return False
-        proc = subprocess.run(
-            [
-                curl, "--fail", "-sS", "-L", "--max-time", "30",
-                "-A", USER_AGENT, "-e", referer, source_url,
-                "-o", str(destination),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return proc.returncode == 0 and destination.is_file() and destination.stat().st_size > 0
-
-    def _prepare_android_vlc_subtitle(self, title: str, source_url: str, referer: str) -> Optional[str]:
-        directory = _android_shared_subtitle_dir()
-        if directory is None:
-            return None
-        safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).strip() or "subtitle"
-        destination = directory / f"ani-py-{safe_title}{_subtitle_suffix_for(source_url)}"
-        try:
-            downloaded = self._download_android_vlc_subtitle(source_url, referer, destination)
-            if not downloaded:
-                warn(f"Could not stage a local subtitle file for {title}.")
-                try:
-                    destination.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                return None
-        except OSError:
-            warn(f"Could not stage a local subtitle file for {title}.")
-            try:
-                destination.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return None
-        return str(destination)
-
     def _android_diagnostics(
         self, requested: str, relay_active: bool, subtitle: Optional[str], subtitle_suffix: Optional[str],
     ) -> None:
@@ -2093,11 +2147,7 @@ class Playback:
         print("  subtitle: resolved", file=sys.stderr)
         subtitle_type = (subtitle_suffix or _subtitle_suffix_for(subtitle)).lstrip('.').upper()
         print(f"  subtitle type: {subtitle_type}", file=sys.stderr)
-        if urlsplit(subtitle).scheme not in {"http", "https"}:
-            print("  subtitle transport: local file", file=sys.stderr)
-            print(f"  subtitle file: {Path(subtitle).name}", file=sys.stderr)
-            print(f"  subtitle suffix: {(subtitle_suffix or _subtitle_suffix_for(subtitle))}", file=sys.stderr)
-        elif relay_active:
+        if relay_active:
             print("  subtitle transport: localhost relay", file=sys.stderr)
             print(f"  subtitle relay suffix: {subtitle_suffix or _subtitle_suffix_for(subtitle)}", file=sys.stderr)
             if self._android_relay_dir is not None:
@@ -2105,7 +2155,13 @@ class Playback:
         else:
             print("  subtitle transport: direct URL", file=sys.stderr)
 
-    def _start_android_relay(self, referer: str, subtitle: Optional[str] = None) -> Optional[AndroidRelayEndpoint]:
+    def _start_android_relay(
+        self,
+        referer: str,
+        subtitle: Optional[str] = None,
+        subtitle_language: Optional[str] = None,
+        subtitle_label: Optional[str] = None,
+    ) -> Optional[AndroidRelayEndpoint]:
         # A loopback relay makes Referer-protected streams usable by Android
         # players without requiring player-specific config or Shizuku. It also
         # rewrites HLS child playlists/segments so every request keeps headers.
@@ -2126,6 +2182,8 @@ class Playback:
             "token": token,
             "referer": referer,
             "subtitle_target": subtitle,
+            "subtitle_language": subtitle_language,
+            "subtitle_label": subtitle_label,
             "user_agent": USER_AGENT,
             "idle_timeout": 3600,
             "debug": debug,
@@ -2232,28 +2290,29 @@ class Playback:
         title: str,
         subtitle: Optional[str],
         referer: str,
+        subtitle_language: Optional[str] = None,
+        subtitle_label: Optional[str] = None,
     ) -> int:
-        relay = self._start_android_relay(referer, subtitle) if urlsplit(stream.url).scheme in {"http", "https"} else None
+        relay = (
+            self._start_android_relay(
+                referer,
+                subtitle,
+                subtitle_language=subtitle_language,
+                subtitle_label=subtitle_label,
+            )
+            if urlsplit(stream.url).scheme in {"http", "https"}
+            else None
+        )
         video_url = relay.url_for(stream.url) if relay else stream.url
         requested = self.player.removeprefix("android_")
-        # VLC's subtitle extra is a subtitle-file path. Stage a VLC-readable
-        # local copy when Termux shared storage is available; otherwise retain
-        # the relay URL so playback can continue. mpv-android keeps existing
-        # behavior: shell `am` cannot build its ParcelableArray<Uri> subs extra.
+        # WebVTT subtitles ride the relayed HLS playlist as a native rendition
+        # for VLC and mpv-android. VLC also receives subtitles_location as a
+        # fallback, without writing persistent files into shared storage.
         subtitle_url: Optional[str] = None
         subtitle_suffix: Optional[str] = None
         if subtitle:
-            if relay:
-                subtitle_url = relay.subtitle_url_for(subtitle)
-                subtitle_suffix = _subtitle_suffix_for(subtitle)
-            else:
-                subtitle_url = subtitle
-            if subtitle_url and requested in {"vlc", "auto"}:
-                local_subtitle = self._prepare_android_vlc_subtitle(title, subtitle_url, referer)
-                if local_subtitle:
-                    subtitle_url = local_subtitle
-                else:
-                    warn(f"Continuing with the current subtitle URL for {title}; local subtitle staging failed.")
+            subtitle_url = relay.subtitle_url_for(subtitle) if relay else subtitle
+            subtitle_suffix = _subtitle_suffix_for(subtitle)
 
         if self._android_debug():
             self._android_diagnostics(requested, relay is not None, subtitle_url or subtitle, subtitle_suffix)
@@ -2275,10 +2334,7 @@ class Playback:
                     self._android_launched = True
                     return 0
         else:
-            if requested == "vlc" and getattr(self.args, "android_vlc_explicit", False):
-                intent = self._android_vlc_explicit_intent(video_url, title, subtitle_url)
-            else:
-                intent = self._android_intent(requested, video_url, title, subtitle_url)
+            intent = self._android_intent(requested, video_url, title, subtitle_url)
             if self._run_android_intent(intent):
                 self._android_launched = True
                 return 0
@@ -2524,6 +2580,8 @@ class Playback:
         referer: str,
         mal_id: Optional[str],
         episode: str,
+        subtitle_language: Optional[str] = None,
+        subtitle_label: Optional[str] = None,
         foreground: bool = False,
         keep_open: bool = True,
     ) -> int:
@@ -2536,7 +2594,14 @@ class Playback:
         if self._is_android():
             if self.args.skip:
                 warn("--skip is not available through Android intent players; playback will continue normally.")
-            return self._play_android(stream, title=title, subtitle=subtitle, referer=referer)
+            return self._play_android(
+                stream,
+                title=title,
+                subtitle=subtitle,
+                referer=referer,
+                subtitle_language=subtitle_language,
+                subtitle_label=subtitle_label,
+            )
 
         if "mpv" in basename:
             # Never leave two ani-py-owned mpv instances around.
@@ -2551,7 +2616,8 @@ class Playback:
                 warn("--skip is supported only with mpv; IINA playback will continue without ani-skip flags.")
             cmd = [self.player, f"--mpv-referrer={referer}", f"--mpv-force-media-title={title}", "--no-stdin"]
             if subtitle:
-                cmd.append(f"--mpv-sub-files={subtitle.replace(':', r'\:')}")
+                escaped_subtitle = subtitle.replace(":", r"\:")
+                cmd.append("--mpv-sub-files=" + escaped_subtitle)
             cmd += extra + [stream.url]
         elif "vlc" in basename:
             if self.args.skip:
@@ -2590,6 +2656,8 @@ class Playback:
         referer: str,
         mal_id: Optional[str],
         episode: str,
+        subtitle_language: Optional[str] = None,
+        subtitle_label: Optional[str] = None,
     ) -> int:
         """Replace the current mpv item in-place; restart only as a fallback."""
         if not self._is_mpv() or not self._ipc_supported() or self.args.skip or not self.active():
@@ -2598,8 +2666,14 @@ class Playback:
             if self.active():
                 self.stop()
             return self.play(
-                stream, title=title, subtitle=subtitle, referer=referer,
-                mal_id=mal_id, episode=episode,
+                stream,
+                title=title,
+                subtitle=subtitle,
+                referer=referer,
+                mal_id=mal_id,
+                episode=episode,
+                subtitle_language=subtitle_language,
+                subtitle_label=subtitle_label,
             )
 
         try:
@@ -2615,8 +2689,14 @@ class Playback:
             warn(f"Live mpv switch failed ({exc}); restarting the player.")
             self.stop()
             return self.play(
-                stream, title=title, subtitle=subtitle, referer=referer,
-                mal_id=mal_id, episode=episode,
+                stream,
+                title=title,
+                subtitle=subtitle,
+                referer=referer,
+                mal_id=mal_id,
+                episode=episode,
+                subtitle_language=subtitle_language,
+                subtitle_label=subtitle_label,
             )
 
     def replay(self) -> bool:
@@ -3000,6 +3080,8 @@ class App:
             referer=bundle.referer,
             mal_id=bundle.mal_id,
             episode=episode.number,
+            subtitle_language=bundle.subtitle_language,
+            subtitle_label=bundle.subtitle_label,
         )
         if replace:
             rc = play_fn(stream, **play_kwargs)
@@ -3222,11 +3304,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=os.getenv("ANI_PY_ANDROID_DEBUG", "0") == "1",
         help="print Android playback/relay diagnostics to stderr (harmless off Android)",
-    )
-    parser.add_argument(
-        "--android-vlc-explicit",
-        action="store_true",
-        help="diagnostic: target VLC's exported VideoPlayerActivity for subtitle A/B testing",
     )
     parser.add_argument("--_android-relay-config", help=argparse.SUPPRESS)
     parser.add_argument("-V", "--version", action="version", version=f"{APP_NAME} {VERSION}")
