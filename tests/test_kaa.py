@@ -89,6 +89,13 @@ class TestKaaProvider(unittest.TestCase):
         episode = self.provider.episodes(anime)[0]
         self.assertEqual(self.provider.resolve(anime, episode, "dub").provider, "kaa")
 
+    def test_resolve_carries_origin_header_for_segments(self):
+        anime = ani_py.Anime("naruto", "Naruto", "kaa")
+        episode = self.provider.episodes(anime)[0]
+        bundle = self.provider.resolve(anime, episode, "sub")
+        # Segment host 403s without Origin; mpv must send it.
+        self.assertEqual(bundle.extra_headers, {"Origin": "https://krussdomi.com"})
+
 
 if __name__ == "__main__":
     unittest.main()

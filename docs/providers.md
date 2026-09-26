@@ -36,7 +36,8 @@ Termux smoke matrix. Soft-sub/MegaPlay support and provider-native skip metadata
 are not claimed by this adapter yet; `--skip` continues to use `ani-skip`.
 
 KickAssAnime is implemented against its JSON search/show/episode endpoints and
-returns direct HLS with the required stream referer. AniNeko uses its public
+returns direct HLS with the required stream referer plus an `Origin` header that
+its segment host enforces (sent for mpv playback and downloads). AniNeko uses its public
 HTML episode/server pages and extracts direct HLS from embed pages. AniKoto
 uses its AJAX episode/server endpoints, preserves MAL ids for `--skip`, and
 tries direct HLS/MP4 sources plus mapper-provided download links. All three are

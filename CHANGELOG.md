@@ -3,6 +3,9 @@
 ## Unreleased (0.5.2-rc11)
 
 - Added direct experimental KickAssAnime, AniNeko, and AniKoto providers. KAA uses JSON episode APIs and HLS manifests; AniNeko resolves HLS from its server embeds; AniKoto uses AJAX server metadata with direct HLS/MP4 and optional mapper download fallbacks. All remain opt-in while live smoke testing is pending.
+- Fixed KickAssAnime playback: its segment host 403s without an `Origin` header, so mpv exited before opening a window. ani-py now sends the header for mpv playback and downloads.
+- Fixed AniKoto search titles: title anchors are now preferred over poster anchors, which previously surfaced rating/type fragments instead of show names.
+- AniNeko times out from the test network (2026-09-26); it fails cleanly through its memoized preflight and stays experimental opt-in.
 
 - Updated `--skip` integration for current `ani-skip` by passing provider-supplied MAL ids through the direct `-i/--id` interface instead of the legacy numeric `-q/--query` compatibility path.
 

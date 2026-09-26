@@ -1,4 +1,5 @@
 import unittest
+from typing import Any
 
 import ani_py
 
@@ -59,7 +60,7 @@ class FakeHttp:
 
 class TestAniNekoProvider(unittest.TestCase):
     def setUp(self):
-        self.http = FakeHttp()
+        self.http: Any = FakeHttp()
         self.provider = ani_py.AniNekoProvider(self.http)
 
     def test_search(self):
@@ -89,6 +90,20 @@ class TestAniNekoProvider(unittest.TestCase):
         episode = self.provider.episodes(anime)[0]
         bundle = self.provider.resolve(anime, episode, "dub")
         self.assertEqual(bundle.streams[0].url, "https://cdn.example/dub/720.m3u8")
+
+    def test_preflight_marks_dead_site_unavailable_and_memoizes(self):
+        calls = []
+
+        class DeadHttp:
+            def get(self, url, **kwargs) -> str:
+                calls.append(url)
+                raise ani_py.HttpError("timeout")
+
+        http: Any = DeadHttp()
+        provider = ani_py.AniNekoProvider(http)
+        self.assertFalse(provider.available())
+        self.assertFalse(provider.available())
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

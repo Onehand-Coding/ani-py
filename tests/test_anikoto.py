@@ -1,4 +1,5 @@
 import unittest
+from typing import Any
 
 import ani_py
 
@@ -34,7 +35,7 @@ class FakeHttp:
     def __init__(self):
         self.calls = []
 
-    def get(self, url, **kwargs):
+    def get(self, url, **kwargs) -> str:
         self.calls.append(("get", url, kwargs))
         if "/filter?keyword=naruto" in url:
             return SEARCH_HTML
@@ -71,13 +72,28 @@ class FakeHttp:
 
 class TestAniKotoProvider(unittest.TestCase):
     def setUp(self):
-        self.http = FakeHttp()
+        self.http: Any = FakeHttp()
         self.provider = ani_py.AniKotoProvider(self.http)
 
     def test_search(self):
         self.assertEqual(
             self.provider.search("naruto"),
             [ani_py.Anime("naruto", "Naruto", "anikoto")],
+        )
+
+    def test_search_prefers_title_anchor_over_poster(self):
+        # Live cards carry a bare poster anchor (image + meta spans) ahead of
+        # the real title anchor; the slug must resolve to the show name,
+        # not rating/type fragments like "1 ONA".
+        html = """
+        <div class="item"><div class="ani poster"><a href="https://anikototv.to/watch/road-of-naruto-ggjw8/ep-1">"""
+        html += """<img alt="Road of Naruto" /><div class="meta"><div class="right">ONA</div></div></a></div>"""
+        html += """<div class="info"><a class="name d-title" href="https://anikototv.to/watch/road-of-naruto-ggjw8/ep-1" """
+        html += """data-jp="Road of Naruto">Road of Naruto</a></div></div>"""
+        self.http.get = lambda url, **kwargs: html
+        self.assertEqual(
+            self.provider.search("naruto"),
+            [ani_py.Anime("road-of-naruto-ggjw8", "Road of Naruto", "anikoto")],
         )
 
     def test_episode_metadata_and_mal_id(self):

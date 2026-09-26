@@ -33,7 +33,7 @@ import textwrap
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, NoReturn, Optional, Sequence
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, quote_plus, urlencode, urljoin, urlsplit
@@ -47,6 +47,7 @@ ANILIGHT_BASE_URL = "https://anilight.live"
 ANILIGHT_API_URL = "https://api.anilight.live/api"
 KAA_BASE_URL = "https://kaa.lt"
 KAA_HLS_BASE_URL = "https://hls.krussdomi.com/manifest"
+KAA_ORIGIN = "https://krussdomi.com"
 ANINEKO_BASE_URL = "https://anineko.to"
 ANIKOTO_BASE_URL = "https://anikototv.to"
 ANIKOTO_MAPPER_URL = "https://mapper.mewcdn.online/api/mal"
@@ -128,7 +129,7 @@ def warn(message: str) -> None:
     print(f"{sty('!', C.YELLOW)} {message}", file=sys.stderr)
 
 
-def fail(message: str, code: int = 1) -> "None":
+def fail(message: str, code: int = 1) -> NoReturn:
     print(f"{sty('error', C.BOLD, C.RED)}  {message}", file=sys.stderr)
     raise SystemExit(code)
 
@@ -168,6 +169,7 @@ class StreamBundle:
     provider: str = "unknown"
     subtitle_language: Optional[str] = None
     subtitle_label: Optional[str] = None
+    extra_headers: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -361,14 +363,14 @@ class HttpClient:
             "GET", url, referer=referer, headers=headers, timeout=timeout, cookie_jar=cookie_jar
         )
 
-    def get_json(self, url: str, **kwargs: object) -> object:
+    def get_json(self, url: str, **kwargs: Any) -> object:
         body = self.get(url, **kwargs)
         try:
             return json.loads(body)
         except json.JSONDecodeError as exc:
             raise HttpError(f"Expected JSON from {url}") from exc
 
-    def post_json(self, url: str, payload: object, **kwargs: object) -> object:
+    def post_json(self, url: str, payload: object, **kwargs: Any) -> object:
         body = self.request("POST", url, json_body=payload, **kwargs)
         try:
             return json.loads(body)
@@ -1160,10 +1162,12 @@ class KaaProvider(Provider):
                 master = self.http.get(url, referer=referer, timeout=12)
                 parsed = HianimeProvider._parse_master(master, url)
                 if parsed:
-                    return StreamBundle(parsed, None, referer, None, provider=self.name)
+                    return StreamBundle(parsed, None, referer, None, provider=self.name,
+                                       extra_headers={"Origin": KAA_ORIGIN})
             except HttpError:
                 continue
-        return StreamBundle(fallback, None, referer, None, provider=self.name)
+        return StreamBundle(fallback, None, referer, None, provider=self.name,
+                            extra_headers={"Origin": KAA_ORIGIN})
 
 
 # ---------- AniNeko experimental provider ----------
@@ -1413,15 +1417,29 @@ class AniKotoProvider(Provider):
                 re.IGNORECASE | re.DOTALL,
             ),
         )
+        ranked: list[tuple[int, re.Match[str]]] = []
         for pattern in patterns:
             for match in pattern.finditer(page):
-                attrs = _attrs("<a " + match.group(1) + ">")
-                slug = match.group(2)
-                title = attrs.get("title") or _plain_text(match.group(3))
-                if not title or len(title) < 2 or slug in seen:
-                    continue
-                found.append(Anime(slug, title, self.name))
-                seen.add(slug)
+                # Cards carry a bare poster anchor (image + meta spans) ahead
+                # of the real title anchor; rank title anchors first so slugs
+                # resolve to show names instead of rating/type fragments.
+                tag_attrs = _attrs("<a " + match.group(1) + ">")
+                classes = tag_attrs.get("class", "").split()
+                if "d-title" in classes or "name" in classes:
+                    rank = 0
+                elif tag_attrs.get("title"):
+                    rank = 1
+                else:
+                    rank = 2
+                ranked.append((rank, match))
+        for _, ranked_match in sorted(ranked, key=lambda item: item[0]):
+            attrs = _attrs("<a " + ranked_match.group(1) + ">")
+            slug = ranked_match.group(2)
+            title = attrs.get("title") or _plain_text(ranked_match.group(3))
+            if not title or len(title) < 2 or slug in seen:
+                continue
+            found.append(Anime(slug, title, self.name))
+            seen.add(slug)
         return found
 
     def _show_page(self, slug: str) -> str:
@@ -3553,6 +3571,7 @@ class Playback:
         mal_id: Optional[str],
         episode: str,
         keep_open: bool = True,
+        extra_headers: Optional[dict[str, str]] = None,
     ) -> list[str]:
         extra = split_flags(os.getenv("ANI_PY_PLAYER_FLAGS", "")) + self.args.player_flag
         ipc_args: list[str] = []
@@ -3592,6 +3611,8 @@ class Playback:
             f"--referrer={referer}",
             f"--force-media-title={title}",
         ]
+        if extra_headers:
+            cmd.append("--http-header-fields=" + ",".join(f"{k}: {v}" for k, v in extra_headers.items()))
         if subtitle:
             cmd.append(f"--sub-file={subtitle}")
         cmd += self._skip_args(mal_id, episode) + extra + [stream.url]
@@ -3603,16 +3624,18 @@ class Playback:
         *,
         title: str,
         subtitle: Optional[str],
-        referer: str,
+            referer: str,
         mal_id: Optional[str],
         episode: str,
         subtitle_language: Optional[str] = None,
         subtitle_label: Optional[str] = None,
         foreground: bool = False,
         keep_open: bool = True,
+        extra_headers: Optional[dict[str, str]] = None,
     ) -> int:
         if self.player == "download":
-            return self.download(stream, title=title, subtitle=subtitle, referer=referer)
+            return self.download(stream, title=title, subtitle=subtitle, referer=referer,
+                                 extra_headers=extra_headers)
 
         extra = split_flags(os.getenv("ANI_PY_PLAYER_FLAGS", "")) + self.args.player_flag
         basename = self.player if self._is_android() else Path(self.player).name.lower()
@@ -3636,6 +3659,7 @@ class Playback:
             cmd = self._mpv_command(
                 stream, title=title, subtitle=subtitle, referer=referer,
                 mal_id=mal_id, episode=episode, keep_open=keep_open,
+                extra_headers=extra_headers,
             )
         elif "iina" in basename:
             if self.args.skip:
@@ -3684,11 +3708,14 @@ class Playback:
         episode: str,
         subtitle_language: Optional[str] = None,
         subtitle_label: Optional[str] = None,
+        extra_headers: Optional[dict[str, str]] = None,
     ) -> int:
         """Replace the current mpv item in-place; restart only as a fallback."""
-        if not self._is_mpv() or not self._ipc_supported() or self.args.skip or not self.active():
-            # --skip may carry episode-specific mpv flags, so a fresh process is
-            # safer than trying to mutate unknown script options over IPC.
+        if (not self._is_mpv() or not self._ipc_supported() or self.args.skip
+                or not self.active() or extra_headers):
+            # --skip may carry episode-specific mpv flags, and extra_headers
+            # need process-level HTTP options, so a fresh process is safer
+            # than trying to mutate unknown state over IPC.
             if self.active():
                 self.stop()
             return self.play(
@@ -3700,6 +3727,7 @@ class Playback:
                 episode=episode,
                 subtitle_language=subtitle_language,
                 subtitle_label=subtitle_label,
+                extra_headers=extra_headers,
             )
 
         try:
@@ -3723,6 +3751,7 @@ class Playback:
                 episode=episode,
                 subtitle_language=subtitle_language,
                 subtitle_label=subtitle_label,
+                extra_headers=extra_headers,
             )
 
     def replay(self) -> bool:
@@ -3735,7 +3764,8 @@ class Playback:
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
             return False
 
-    def download(self, stream: Stream, *, title: str, subtitle: Optional[str], referer: str) -> int:
+    def download(self, stream: Stream, *, title: str, subtitle: Optional[str], referer: str,
+                 extra_headers: Optional[dict[str, str]] = None) -> int:
         outdir = Path(os.getenv("ANI_PY_DOWNLOAD_DIR", ".")).expanduser()
         outdir.mkdir(parents=True, exist_ok=True)
         safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).strip() or "episode"
@@ -3759,6 +3789,10 @@ class Playback:
                 yt_dlp,
                 "--referer", referer,
                 "--user-agent", USER_AGENT,
+            ]
+            for key, value in (extra_headers or {}).items():
+                cmd += ["--add-header", f"{key}: {value}"]
+            cmd += [
                 "--no-skip-unavailable-fragments",
                 "--fragment-retries", "infinite",
                 "-N", "16",
@@ -3771,6 +3805,10 @@ class Playback:
                 "-extension_picky", "0",
                 "-referer", referer,
                 "-user_agent", USER_AGENT,
+            ]
+            if extra_headers:
+                cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in extra_headers.items())]
+            cmd += [
                 "-loglevel", "error", "-stats",
                 "-i", stream.url,
                 "-c", "copy",
@@ -4188,6 +4226,7 @@ class App:
         clear_screen()
         banner(f"{anime.title}  •  Episode {episode.number}  •  {stream.quality}")
         print()
+        assert self.playback is not None
         print(f"  {sty('Title', C.DIM)}    {anime.title}")
         print(f"  {sty('Episode', C.DIM)}  {episode.number}")
         print(f"  {sty('Mode', C.DIM)}     {self.args.mode.upper()}")
@@ -4196,9 +4235,8 @@ class App:
         print(f"  {sty('Player', C.DIM)}   {Path(self.playback.player).name if self.playback.player != 'download' else 'download'}")
         print(f"  {sty('Subtitle', C.DIM)} {'yes' if bundle.subtitle else 'none'}")
         print()
-        assert self.playback is not None
-        play_fn = self.playback.replace if replace else self.playback.play
-        play_kwargs = dict(
+        play_fn: Callable[..., int] = self.playback.replace if replace else self.playback.play
+        play_kwargs: dict[str, Any] = dict(
             title=f"{anime.title} Episode {episode.number}",
             subtitle=bundle.subtitle,
             referer=bundle.referer,
@@ -4206,6 +4244,7 @@ class App:
             episode=episode.number,
             subtitle_language=bundle.subtitle_language,
             subtitle_label=bundle.subtitle_label,
+            extra_headers=bundle.extra_headers,
         )
         if replace:
             rc = play_fn(stream, **play_kwargs)
