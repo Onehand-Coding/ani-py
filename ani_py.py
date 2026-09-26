@@ -671,7 +671,6 @@ class AniLightProvider(Provider):
     @property
     def api_headers(self) -> dict[str, str]:
         return {
-            "Referer": self.base + "/",
             "Origin": self.base,
             "Accept": "application/json,text/plain,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
