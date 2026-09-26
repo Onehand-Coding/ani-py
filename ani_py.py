@@ -45,6 +45,9 @@ ANIMEKAI_BASE_URL = ""  # no trusted default; set ANI_PY_ANIMEKAI_URL explicitly
 KUHI_BASE_URL = "https://anime-scraper-v2.vercel.app"
 ANILIGHT_BASE_URL = "https://anilight.live"
 ANILIGHT_API_URL = "https://api.anilight.live/api"
+KAA_BASE_URL = "https://kaa.lt"
+KAA_HLS_BASE_URL = "https://hls.krussdomi.com/manifest"
+ANINEKO_BASE_URL = "https://anineko.to"
 ANIMEKAI_ENC_URL = "https://enc-dec.app/api/enc-kai"
 ANIMEKAI_DEC_KAI_URL = "https://enc-dec.app/api/dec-kai"
 ANIMEKAI_DEC_MEGA_URL = "https://enc-dec.app/api/dec-mega"
@@ -943,6 +946,413 @@ class AniLightProvider(Provider):
             mal_id=self._mal_id(anime),
             provider=self.name,
         )
+
+
+
+# ---------- KickAssAnime experimental provider ----------
+
+class KaaProvider(Provider):
+    name = "kaa"
+    display_name = "KickAssAnime"
+    capabilities = ProviderCapabilities(
+        sub=True, dub=True, subtitles=False, qualities=True, mal_id=False
+    )
+    experimental = True
+
+    def __init__(self, http: HttpClient) -> None:
+        self.http = http
+        self.base = os.getenv("ANI_PY_KAA_URL", KAA_BASE_URL).rstrip("/")
+        self.hls_base = os.getenv("ANI_PY_KAA_HLS_URL", KAA_HLS_BASE_URL).rstrip("/")
+        self._available: Optional[bool] = None
+        self._show_cache: dict[str, dict[str, object]] = {}
+        self._episode_cache: dict[str, dict[str, dict[str, object]]] = {}
+
+    @staticmethod
+    def _number(value: object) -> Optional[str]:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float):
+            return str(int(value)) if value.is_integer() else str(value)
+        if isinstance(value, str):
+            value = value.strip()
+            if re.fullmatch(r"\d+(?:\.\d+)?", value):
+                return value[:-2] if value.endswith(".0") else value
+        return None
+
+    def available(self) -> bool:
+        if self._available is None:
+            try:
+                self._available = bool(self.search("naruto"))
+            except ProviderError as exc:
+                warn(f"KickAssAnime preflight failed ({exc}); treating it as unavailable.")
+                self._available = False
+        return self._available
+
+    def search(self, query: str) -> list[Anime]:
+        try:
+            data = self.http.post_json(
+                f"{self.base}/api/fsearch",
+                {"page": 1, "query": query},
+                headers={"Accept": "application/json"},
+                referer=self.base + "/",
+                timeout=15,
+            )
+        except HttpError as exc:
+            raise ProviderUnavailable(f"KickAssAnime search failed: {exc}") from exc
+        rows = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise ProviderChanged("KickAssAnime search response did not contain results.")
+
+        found: list[Anime] = []
+        seen: set[str] = set()
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            slug = item.get("slug")
+            title = item.get("title_en") or item.get("title")
+            if not isinstance(slug, str) or not slug or not isinstance(title, str) or not title.strip():
+                continue
+            if slug in seen:
+                continue
+            found.append(Anime(slug, title.strip(), self.name))
+            seen.add(slug)
+        return found
+
+    def _show(self, slug: str) -> dict[str, object]:
+        cached = self._show_cache.get(slug)
+        if cached is not None:
+            return cached
+        try:
+            data = self.http.get_json(
+                f"{self.base}/api/show/{quote(slug, safe='-._~')}",
+                headers={"Accept": "application/json"},
+                referer=self.base + "/",
+                timeout=15,
+            )
+        except HttpError as exc:
+            raise ProviderUnavailable(f"KickAssAnime show lookup failed: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ProviderChanged("KickAssAnime show response was not an object.")
+        self._show_cache[slug] = data
+        return data
+
+    def _episode_page(self, slug: str, start: object) -> dict[str, object]:
+        try:
+            data = self.http.get_json(
+                f"{self.base}/api/show/{quote(slug, safe='-._~')}/episodes?"
+                + urlencode({"ep": start, "lang": "ja-JP"}),
+                headers={"Accept": "application/json"},
+                referer=self.base + "/",
+                timeout=20,
+            )
+        except HttpError as exc:
+            raise ProviderUnavailable(f"KickAssAnime episode lookup failed: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ProviderChanged("KickAssAnime episode response was not an object.")
+        return data
+
+    def _episode_rows(self, anime: Anime | str) -> dict[str, dict[str, object]]:
+        slug = _provider_id(anime)
+        cached = self._episode_cache.get(slug)
+        if cached is not None:
+            return cached
+
+        show = self._show(slug)
+        rows: dict[str, dict[str, object]] = {}
+        if str(show.get("type") or "").lower() == "movie":
+            watch_uri = str(show.get("watch_uri") or "")
+            match = re.search(r"/(ep-(\d+)-[a-f0-9]+)(?:[/?#]|$)", watch_uri, re.IGNORECASE)
+            if match:
+                rows["1"] = {"number": "1", "full_slug": match.group(1)}
+        else:
+            first = self._episode_page(slug, 1)
+            batches: list[object] = [first.get("result")]
+            pages = first.get("pages")
+            if isinstance(pages, list):
+                for page in pages[1:]:
+                    if not isinstance(page, dict):
+                        continue
+                    eps = page.get("eps")
+                    start = eps[0] if isinstance(eps, list) and eps else None
+                    if start is None:
+                        continue
+                    batches.append(self._episode_page(slug, start).get("result"))
+            for batch in batches:
+                if not isinstance(batch, list):
+                    continue
+                for item in batch:
+                    if not isinstance(item, dict):
+                        continue
+                    number = self._number(item.get("episode_number"))
+                    ep_slug = item.get("slug")
+                    if not number or not isinstance(ep_slug, str) or not ep_slug:
+                        continue
+                    rows[number] = {
+                        "number": number,
+                        "full_slug": f"ep-{number}-{ep_slug}",
+                    }
+
+        if not rows:
+            raise EpisodeNotFound(f"KickAssAnime returned no episodes for {slug}.")
+        self._episode_cache[slug] = rows
+        return rows
+
+    def episodes(self, anime: Anime | str) -> list[Episode]:
+        rows = self._episode_rows(anime)
+        result = [Episode(str(row["full_slug"]), number) for number, row in rows.items()]
+        result.sort(key=lambda ep: float(ep.number) if re.fullmatch(r"\d+(?:\.\d+)?", ep.number) else 10**9)
+        return result
+
+    def resolve(self, anime: Anime | str, episode: Episode, mode: str) -> StreamBundle:
+        if mode not in {"sub", "dub"}:
+            raise StreamNotFound(f"KickAssAnime does not support mode {mode!r}.")
+        slug = _provider_id(anime)
+        show = self._show(slug)
+        locales = show.get("locales")
+        if mode == "dub" and isinstance(locales, list) and "en-US" not in locales:
+            raise StreamNotFound(f"KickAssAnime has no English dub for episode {episode.number}.")
+
+        rows = self._episode_rows(anime)
+        row = rows.get(episode.number)
+        if not row:
+            raise EpisodeNotFound(f"KickAssAnime episode {episode.number} was not found.")
+        full_slug = str(row.get("full_slug") or episode.episode_id)
+        try:
+            data = self.http.get_json(
+                f"{self.base}/api/show/{quote(slug, safe='-._~')}/episode/{quote(full_slug, safe='-._~')}",
+                headers={"Accept": "application/json"},
+                referer=self.base + "/",
+                timeout=20,
+            )
+        except HttpError as exc:
+            raise ProviderUnavailable(f"KickAssAnime stream lookup failed: {exc}") from exc
+        servers = data.get("servers") if isinstance(data, dict) else None
+        if not isinstance(servers, list):
+            raise ProviderChanged("KickAssAnime stream response did not contain servers.")
+
+        urls: list[str] = []
+        for server in servers:
+            if not isinstance(server, dict):
+                continue
+            src = server.get("src")
+            if not isinstance(src, str) or not src:
+                continue
+            if ".m3u8" in src:
+                url = src
+            else:
+                match = re.search(r"[?&]id=([^&]+)", src)
+                if not match:
+                    continue
+                url = f"{self.hls_base}/{quote(match.group(1), safe='')}/master.m3u8"
+            if url not in urls:
+                urls.append(url)
+        if not urls:
+            raise StreamNotFound(f"KickAssAnime returned no HLS stream for episode {episode.number}.")
+
+        referer = "https://krussdomi.com/"
+        fallback = [Stream("auto", url) for url in urls]
+        for url in urls:
+            try:
+                master = self.http.get(url, referer=referer, timeout=12)
+                parsed = HianimeProvider._parse_master(master, url)
+                if parsed:
+                    return StreamBundle(parsed, None, referer, None, provider=self.name)
+            except HttpError:
+                continue
+        return StreamBundle(fallback, None, referer, None, provider=self.name)
+
+
+# ---------- AniNeko experimental provider ----------
+
+class AniNekoProvider(Provider):
+    name = "anineko"
+    display_name = "AniNeko"
+    capabilities = ProviderCapabilities(
+        sub=True, dub=True, subtitles=False, qualities=True, mal_id=False
+    )
+    experimental = True
+
+    _HLS_PATTERNS = (
+        re.compile(r"""const\s+src\s*=\s*["'](https?://[^"']+\.m3u8[^"']*)["']""", re.IGNORECASE),
+        re.compile(r"""file\s*:\s*["'](https?://[^"']+\.m3u8[^"']*)["']""", re.IGNORECASE),
+        re.compile(r"""["'](https?://[^"']+/master\.m3u8[^"']*)["']""", re.IGNORECASE),
+        re.compile(r"""["'](https?://[^"']+\.m3u8[^"']*)["']""", re.IGNORECASE),
+    )
+
+    def __init__(self, http: HttpClient) -> None:
+        self.http = http
+        self.base = os.getenv("ANI_PY_ANINEKO_URL", ANINEKO_BASE_URL).rstrip("/")
+        self._available: Optional[bool] = None
+        self._page_cache: dict[str, str] = {}
+        self._episode_cache: dict[str, dict[str, dict[str, object]]] = {}
+
+    def available(self) -> bool:
+        if self._available is None:
+            try:
+                self._available = bool(self.search("naruto"))
+            except ProviderError as exc:
+                warn(f"AniNeko preflight failed ({exc}); treating it as unavailable.")
+                self._available = False
+        return self._available
+
+    def search(self, query: str) -> list[Anime]:
+        try:
+            page = self.http.get(
+                f"{self.base}/browser?{urlencode({'keyword': query})}",
+                referer=self.base + "/",
+                timeout=15,
+            )
+        except HttpError as exc:
+            raise ProviderUnavailable(f"AniNeko search failed: {exc}") from exc
+
+        found: list[Anime] = []
+        seen: set[str] = set()
+        for match in re.finditer(
+            r"""<a\b[^>]*class=["'][^"']*nv-anime-thumb[^"']*["'][^>]*>.*?</a>""",
+            page,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            block = match.group(0)
+            tag_match = re.search(r"<a\b[^>]*>", block, re.IGNORECASE)
+            attrs = _attrs(tag_match.group(0) if tag_match else "")
+            slug_match = re.search(r"/watch/([^/?#]+)", attrs.get("href", ""))
+            if not slug_match:
+                continue
+            slug = slug_match.group(1)
+            title_match = re.search(
+                r"""class=["'][^"']*nv-anime-title[^"']*["'][^>]*>(.*?)</""",
+                block,
+                re.IGNORECASE | re.DOTALL,
+            )
+            title = _plain_text(title_match.group(1)) if title_match else slug.replace("-", " ")
+            if slug in seen or not title:
+                continue
+            found.append(Anime(slug, title, self.name))
+            seen.add(slug)
+        return found
+
+    def _series_page(self, slug: str) -> str:
+        cached = self._page_cache.get(slug)
+        if cached is not None:
+            return cached
+        try:
+            page = self.http.get(f"{self.base}/watch/{quote(slug, safe='-._~')}", timeout=20)
+        except HttpError as exc:
+            raise ProviderUnavailable(f"AniNeko show lookup failed: {exc}") from exc
+        self._page_cache[slug] = page
+        return page
+
+    def _episode_rows(self, anime: Anime | str) -> dict[str, dict[str, object]]:
+        slug = _provider_id(anime)
+        cached = self._episode_cache.get(slug)
+        if cached is not None:
+            return cached
+
+        page = self._series_page(slug)
+        rows: dict[str, dict[str, object]] = {}
+        for match in re.finditer(
+            r"""<article\b[^>]*class=["'][^"']*nv-info-episode-item[^"']*["'][^>]*>(.*?)</article>""",
+            page,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            block = match.group(1)
+            link_match = re.search(
+                r"""<a\b[^>]*class=["'][^"']*nv-info-episode-main[^"']*["'][^>]*>""",
+                block,
+                re.IGNORECASE,
+            )
+            attrs = _attrs(link_match.group(0) if link_match else "")
+            num_match = re.search(r"/ep-(\d+)", attrs.get("href", ""))
+            if not num_match:
+                continue
+            number = str(int(num_match.group(1)))
+            badges = [
+                _plain_text(value).casefold()
+                for value in re.findall(r"<span\b[^>]*>(.*?)</span>", block, re.IGNORECASE | re.DOTALL)
+            ]
+            rows[number] = {
+                "episode_id": f"ep-{number}",
+                "sub": any("sub" == badge or "sub " in badge or badge.endswith(" sub") for badge in badges),
+                "dub": any("dub" == badge or "dub " in badge or badge.endswith(" dub") for badge in badges),
+            }
+
+        if not rows:
+            raise EpisodeNotFound(f"AniNeko returned no episodes for {slug}.")
+        self._episode_cache[slug] = rows
+        return rows
+
+    def episodes(self, anime: Anime | str) -> list[Episode]:
+        rows = self._episode_rows(anime)
+        result = [Episode(str(row["episode_id"]), number) for number, row in rows.items()]
+        result.sort(key=lambda ep: float(ep.number))
+        return result
+
+    @classmethod
+    def _hls_from_embed(cls, text: str) -> Optional[str]:
+        for pattern in cls._HLS_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                return html.unescape(match.group(1)).strip()
+        return None
+
+    def resolve(self, anime: Anime | str, episode: Episode, mode: str) -> StreamBundle:
+        if mode not in {"sub", "dub"}:
+            raise StreamNotFound(f"AniNeko does not support mode {mode!r}.")
+        slug = _provider_id(anime)
+        row = self._episode_rows(anime).get(episode.number)
+        if not row:
+            raise EpisodeNotFound(f"AniNeko episode {episode.number} was not found.")
+        if not row.get(mode):
+            raise StreamNotFound(f"AniNeko has no {mode} stream for episode {episode.number}.")
+
+        page_url = f"{self.base}/watch/{quote(slug, safe='-._~')}/{quote(str(row['episode_id']), safe='-._~')}"
+        try:
+            page = self.http.get(page_url, referer=f"{self.base}/watch/{quote(slug, safe='-._~')}", timeout=20)
+        except HttpError as exc:
+            raise ProviderUnavailable(f"AniNeko watch page failed: {exc}") from exc
+
+        embeds: list[str] = []
+        for panel in re.finditer(
+            r"""<div\b[^>]*class=["'][^"']*nv-server-grid[^"']*["'][^>]*data-id=["']([^"']+)["'][^>]*>(.*?)(?=<div\b[^>]*class=["'][^"']*nv-server-grid|$)""",
+            page,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            audio = "dub" if "dub" in panel.group(1).casefold() else "sub"
+            if audio != mode:
+                continue
+            for value in re.findall(r"""data-video=["']([^"']+)["']""", panel.group(2), re.IGNORECASE):
+                url = html.unescape(value).strip()
+                if url and url not in embeds:
+                    embeds.append(url)
+
+        failures: list[str] = []
+        for embed in embeds:
+            parts = urlsplit(embed)
+            referer = f"{parts.scheme}://{parts.netloc}/" if parts.scheme and parts.netloc else self.base + "/"
+            if ".m3u8" in embed:
+                hls = embed
+            else:
+                try:
+                    text = self.http.get(embed, referer=self.base + "/", timeout=15)
+                except HttpError as exc:
+                    failures.append(str(exc))
+                    continue
+                hls = self._hls_from_embed(text)
+            if not hls:
+                continue
+            try:
+                master = self.http.get(hls, referer=referer, timeout=12)
+                streams = HianimeProvider._parse_master(master, hls)
+            except HttpError:
+                streams = []
+            if not streams:
+                streams = [Stream("auto", hls)]
+            return StreamBundle(streams, None, referer, None, provider=self.name)
+
+        detail = failures[-1] if failures else "no direct HLS source was found"
+        raise StreamNotFound(f"AniNeko could not resolve episode {episode.number}: {detail}")
 
 
 # ---------- AnimeKai manual / experimental provider ----------
@@ -3152,6 +3562,8 @@ class App:
             [
                 HianimeProvider(self.http),
                 AniLightProvider(self.http),
+                KaaProvider(self.http),
+                AniNekoProvider(self.http),
                 KuhiProvider(self.http),
                 AnimeKaiProvider(self.http),
             ],
@@ -3675,10 +4087,13 @@ def build_parser() -> argparse.ArgumentParser:
               ANI_PY_DOWNLOAD_DIR    download destination
               ANI_PY_HIST_DIR        state directory root
               ANI_PY_CURL            curl/curl-impersonate executable
-              ANI_PY_PROVIDER        auto, hianime, anilight, kuhi, or animekai
+              ANI_PY_PROVIDER        auto, hianime, anilight, kaa, anineko, kuhi, or animekai
               ANI_PY_PROVIDER_ORDER  failover order (default hianime; backups are opt-in)
               ANI_PY_ANILIGHT_URL     override AniLight site base URL
               ANI_PY_ANILIGHT_API_URL override AniLight API base URL
+              ANI_PY_KAA_URL          override KickAssAnime base URL
+              ANI_PY_KAA_HLS_URL      override KickAssAnime HLS base URL
+              ANI_PY_ANINEKO_URL      override AniNeko base URL
               ANI_PY_KUHI_URL        override Kuhi API base URL
               ANI_PY_ANIMEKAI_URL    override AnimeKai base URL
               NO_COLOR               disable ANSI color
@@ -3694,14 +4109,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-S", "--select-nth", type=int, help="select search result by index")
     parser.add_argument(
         "--provider",
-        choices=["auto", "hianime", "anilight", "kuhi", "animekai"],
+        choices=["auto", "hianime", "anilight", "kaa", "anineko", "kuhi", "animekai"],
         default=os.getenv("ANI_PY_PROVIDER", "auto"),
         help="source provider (default: auto with failover)",
     )
     parser.add_argument(
         "--provider-order",
         default=os.getenv("ANI_PY_PROVIDER_ORDER", "hianime"),
-        help="comma-separated auto-failover order (default: hianime; AniLight/Kuhi/AnimeKai are opt-in)",
+        help="comma-separated auto-failover order (default: hianime; backup providers are opt-in)",
     )
     parser.add_argument("--list-providers", action="store_true", help="show configured providers and exit")
     parser.add_argument("--dub", dest="mode", action="store_const", const="dub", help="use dubbed stream")
