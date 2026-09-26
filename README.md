@@ -149,6 +149,7 @@ The default automatic provider chain is deliberately **HiAnime only**.
 | Provider | Status | Default auto chain |
 |---|---|---:|
 | HiAnime | primary | yes |
+| AniLight | experimental / opt-in | no |
 | Kuhi | experimental / opt-in | no |
 | AnimeKai | experimental / manual | no |
 
@@ -156,9 +157,15 @@ Examples:
 
 ```sh
 ani-py --provider hianime "frieren"
+ani-py --provider anilight "frieren"
 ani-py --provider kuhi "frieren"
-ani-py --provider-order hianime,kuhi "frieren"
+ani-py --provider-order hianime,anilight "frieren"
 ```
+
+AniLight is registered as an experimental direct provider. It resolves sub/dub
+episodes through MegaPlay HLS, preserves WebVTT subtitles, and records provider
+intro/outro timestamps in the resolved stream bundle. It is not part of the
+default automatic chain until live testing is complete.
 
 AnimeKai has no trusted default domain and requires an explicitly configured compatible mirror.
 
@@ -212,6 +219,8 @@ ANI_PY_HIST_DIR
 ANI_PY_CURL
 ANI_PY_PROVIDER
 ANI_PY_PROVIDER_ORDER
+ANI_PY_ANILIGHT_URL
+ANI_PY_ANILIGHT_API_URL
 ANI_PY_KUHI_URL
 ANI_PY_ANIMEKAI_URL
 ANI_PY_MODE
