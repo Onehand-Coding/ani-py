@@ -162,10 +162,13 @@ ani-py --provider kuhi "frieren"
 ani-py --provider-order hianime,anilight "frieren"
 ```
 
-AniLight is registered as an experimental direct provider. It resolves sub/dub
-episodes through MegaPlay HLS, preserves WebVTT subtitles, and records provider
-intro/outro timestamps in the resolved stream bundle. It is not part of the
-default automatic chain until live testing is complete.
+AniLight is registered as an experimental direct provider. The initial adapter
+uses AniLight's current JSON API and its portable `ryu`/AnimeGG source path,
+which returns quality-labelled progressive streams through AniLight's own proxy.
+Sub and dub are supported where that source has coverage; the sub route is
+hard-subbed. Broader soft-sub/MegaPlay backends are intentionally deferred until
+their changing CDN/proxy behavior is proven against ani-py's desktop and Android
+playback paths. AniLight is not part of the default automatic chain yet.
 
 AnimeKai has no trusted default domain and requires an explicitly configured compatible mirror.
 
