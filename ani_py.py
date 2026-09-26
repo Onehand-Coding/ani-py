@@ -39,7 +39,7 @@ from urllib import request as urllib_request
 from urllib.parse import quote, quote_plus, urlencode, urljoin, urlsplit
 
 APP_NAME = "ani-py"
-VERSION = "0.5.2-rc9"
+VERSION = "0.5.2-rc10"
 BASE_URL = "https://hianime.at"
 ANIMEKAI_BASE_URL = ""  # no trusted default; set ANI_PY_ANIMEKAI_URL explicitly
 KUHI_BASE_URL = "https://anime-scraper-v2.vercel.app"
