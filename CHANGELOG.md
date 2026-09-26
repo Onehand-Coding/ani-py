@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.5.2-rc9)
+## Unreleased (0.5.2-rc10)
 
 - Added an experimental direct AniLight provider using its JSON catalog and
   MegaPlay source flow: AniList/slug identity, sub/dub episode mapping, HLS
