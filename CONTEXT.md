@@ -26,9 +26,9 @@ networking, menus, playback, and downloads to best-of-breed external tools.
 
 **Current Milestone:** Personal tool, polishing
 
-**Current Development Focus:** Verify a live backup provider (Kuhi instance or AnimeKai mirror); otherwise hold the HiAnime-only default.
+**Current Development Focus:** Live-test the new direct AniLight adapter on desktop and Termux while keeping the HiAnime-only default automatic chain.
 
-**Longer-Term Direction:** Multi-provider support landed in 0.4.0 (HiAnime + AnimeKai failover) and grew a Kuhi backend in 0.5.0. Both backups are experimental opt-in here until a live instance is confirmed. Next: re-enable whichever backup proves reachable.
+**Longer-Term Direction:** Multi-provider support landed in 0.4.0 and now includes HiAnime, AniLight, Kuhi, and AnimeKai adapters. AniLight is the current candidate for a dependable direct backup; Kuhi and AnimeKai remain experimental legacy options until they prove live and maintainable.
 
 ---
 
@@ -88,8 +88,8 @@ delegated to external binaries. Simple over clever; terminal-first.
 **Folder Organization:** Flat repo - module, tests, and scripts at top
 level. No packages, no layers, no plugins.
 
-**Data Flow:** `App`: query → `ProviderManager` (HiAnime → AnimeKai
-failover) → menu pick → episodes → episode spec/range → `resolve`
+**Data Flow:** `App`: query → `ProviderManager` (provider-selected /
+configured failover order) → menu pick → episodes → episode spec/range → `resolve`
 (MAL id, streams, subtitle) → `Playback` (mpv via private IPC socket,
 or `download` via yt-dlp/ffmpeg) → interactive controller loop →
 provider-aware history.
@@ -109,7 +109,8 @@ provider-aware history.
 
 - All app logic lives in `ani_py.py`; `./ani-py` stays a thin launcher.
 - All scraping/network parsing stays in provider adapters
-  (`HianimeProvider`, `AnimeKaiProvider`) - never in `App`,
+  (`HianimeProvider`, `AniLightProvider`, `KuhiProvider`,
+  `AnimeKaiProvider`) - never in `App`,
   `Playback`, or `Menu`. `ProviderManager` owns selection/failover.
 - Player control goes through `Playback` (private per-process mpv IPC
   socket by default; never hijack a shared `/tmp/mpvsocket`).
@@ -185,6 +186,20 @@ is not evidence of a usable service.
 **Alternatives Considered:** Swapping the default to another mirror (rejected:
 clone/shutdown reports make any single mirror untrustworthy); leaving auto
 failover enabled (rejected: slow confusing failures instead of clean skip).
+
+### AniLight direct provider
+**Choice:** Add AniLight as an experimental direct provider using
+`api.anilight.live` for catalog/episode data and MegaPlay for direct HLS,
+subtitle tracks, and intro/outro timestamps. Keep it out of the default
+automatic chain until live desktop and Termux smoke testing is complete.
+**Status:** Current
+**Reason:** It fits the stdlib + curl architecture better than providers that
+require browser automation or hosted scraper dependencies, and its Referer-
+protected HLS model is compatible with the existing Android relay.
+**Alternatives Considered:** Making it the default backup immediately
+(rejected until live acceptance); AnimePahe/Miruro direct adapters (deferred
+because their current anti-bot requirements conflict with the lightweight
+runtime design).
 
 ### mpv-first playback with private IPC
 **Choice:** mpv primary; per-process private IPC socket; episode queues
@@ -327,13 +342,15 @@ ANI_PY_DOWNLOAD_DIR=/tmp/x          # redirect downloads
 | Service | Purpose |
 |---|---|
 | hianime (scraped) | Primary: search, episodes, stream/subtitle resolve |
+| AniLight + MegaPlay | Experimental direct backup: AniList/slug search, sub/dub HLS, WebVTT subtitles, MAL metadata, intro/outro timestamps |
 | AnimeKai (scraped) | Experimental backup via AJAX + `enc-dec.app` token/decryption helper; no trusted default domain (explicit mirror required) |
 | Kuhi (API) | Experimental backup via AniList search + stream extraction; deep media preflight required; default public instance currently undeployed |
 | CDN media hosts | HLS segments, subtitle files |
 
-Default `auto` mode currently uses HiAnime only. Kuhi and AnimeKai are
-experimental opt-in providers configured through `--provider-order` /
-`ANI_PY_PROVIDER_ORDER`; AnimeKai additionally requires an explicit
+Default `auto` mode currently uses HiAnime only. AniLight, Kuhi, and AnimeKai
+are experimental opt-in providers configured through `--provider-order` /
+`ANI_PY_PROVIDER_ORDER`; AniLight is the current live-testing candidate and
+AnimeKai additionally requires an explicit
 `ANI_PY_ANIMEKAI_URL` mirror. The previously tested public Kuhi deployment
 is currently undeployed, and no AnimeKai domain is treated as a trusted
 default. Mocked adapter tests are not evidence that either deployment is
@@ -367,7 +384,7 @@ plays without skip flags.
 
 - POSIX-only in practice (Unix IPC sockets for mpv control).
 - `--skip` is mpv-only by design; other players warn and ignore it.
-- Dual provider (HiAnime + AnimeKai) with failover; no further backends yet.
+- Multiple provider adapters exist, but the default automatic chain remains HiAnime-only until a backup passes live acceptance.
 - `rofi`/`dmenu` paths exist but are untested here (not installed).
 - Termux playback is live-device verified (97/97 green plus relay Referer/Range/HLS-rewrite probes; owner confirmed VLC/auto playback on-device 2026-09-24).
 
