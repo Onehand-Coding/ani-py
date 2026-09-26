@@ -67,7 +67,7 @@ class TestCLI(unittest.TestCase):
             parser.parse_args(["--android-player", "mpv", "frieren"])
 
     def test_version_is_current(self):
-        self.assertEqual(ani_py.VERSION, "0.5.2-rc9")
+        self.assertEqual(ani_py.VERSION, "0.5.2-rc10")
 
     def test_anilight_provider_can_be_selected_explicitly(self):
         parser = ani_py.build_parser()
