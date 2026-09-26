@@ -8,6 +8,7 @@
   through AniLight's own proxy. Broader soft-sub/HLS backends are deferred
   until their current CDN/proxy behavior is live-tested with ani-py. AniLight
   remains opt-in and is not in the default automatic chain yet.
+- Added `Search another anime` to the interactive playback menu. The current player stays running while a new title and episode are selected, then playback is replaced in the same ani-py session.
 - Kept the default automatic provider order at `hianime` only; Kuhi and
   AnimeKai remain experimental opt-in providers.
 - Android subtitles use the loopback HLS relay as a native subtitle rendition.

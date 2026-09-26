@@ -3339,6 +3339,72 @@ class App:
             raise SystemExit(0)
         return anime, episodes, selected
 
+    def _search_another_anime(self) -> Optional[tuple[Anime, list[Episode], Episode]]:
+        """Search/select a new title without ending the current playback session."""
+        clear_screen()
+        banner("Search another anime")
+        print()
+        try:
+            query = input(sty("  Search › ", C.BOLD, C.CYAN)).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if not query:
+            return None
+
+        status(f"Searching for {sty(query, C.BOLD)}")
+        try:
+            results = self.providers.search(query, self.args.provider)
+        except ProviderError as exc:
+            warn(str(exc))
+            return None
+        if not results:
+            warn("No results found.")
+            return None
+
+        rows, mapping = format_anime_rows(results)
+        picked = self.menu.choose(rows, "Anime › ")
+        if not picked:
+            return None
+        chosen = mapping.get(picked[0])
+        if chosen is None:
+            needle = _strip_ansi(picked[0])
+            chosen = next(
+                (item for row, item in mapping.items() if _strip_ansi(row) == needle),
+                None,
+            )
+        if chosen is None:
+            warn("Selection did not match any result.")
+            return None
+
+        provider = self.providers.get(chosen.provider)
+        ok(f"Selected {chosen.title}  [{provider.display_name}]")
+        status("Loading episodes")
+        try:
+            chosen, episodes = self._episodes_with_fallback(chosen)
+        except ProviderError as exc:
+            warn(str(exc))
+            return None
+        if not episodes:
+            warn("No episodes were found.")
+            return None
+
+        episode_rows, episode_mapping = format_episode_rows(episodes)
+        episode_pick = self.menu.choose(episode_rows, "Episode › ")
+        if not episode_pick:
+            return None
+        episode = episode_mapping.get(episode_pick[0])
+        if episode is None:
+            needle = _strip_ansi(episode_pick[0])
+            episode = next(
+                (item for row, item in episode_mapping.items() if _strip_ansi(row) == needle),
+                None,
+            )
+        if episode is None:
+            warn("Episode selection did not match any entry.")
+            return None
+        return chosen, episodes, episode
+
     def _resolve_on(self, anime: Anime, number: str) -> StreamBundle:
         episodes = self._episodes(anime)
         idx = episode_index(episodes, number)
@@ -3440,6 +3506,7 @@ class App:
                 "Previous episode",
                 "Replay",
                 "Choose episode",
+                "Search another anime",
                 "Change quality",
                 "Detach & exit",
                 "Stop & quit",
@@ -3495,6 +3562,19 @@ class App:
                     else:
                         current = picked_episode
                         self._play_episode(anime, current, quality, replace=True)
+            elif action == "Search another anime":
+                target = self._search_another_anime()
+                if target is None:
+                    continue
+                next_anime, next_episodes, next_episode = target
+                try:
+                    rc = self._play_episode(next_anime, next_episode, quality, replace=True)
+                except SystemExit:
+                    # Provider resolution errors should not tear down the
+                    # current session while the existing player is still alive.
+                    continue
+                if rc == 0:
+                    anime, episodes, current = next_anime, next_episodes, next_episode
             elif action == "Change quality":
                 bundle = self._bundle(anime, current)
                 qrows = list(dict.fromkeys(s.quality for s in bundle.streams))
