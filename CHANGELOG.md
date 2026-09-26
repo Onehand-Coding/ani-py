@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased (0.5.2-rc10)
+## Unreleased (0.5.2-rc11)
+
+- Added direct experimental KickAssAnime, AniNeko, and AniKoto providers. KAA uses JSON episode APIs and HLS manifests; AniNeko resolves HLS from its server embeds; AniKoto uses AJAX server metadata with direct HLS/MP4 and optional mapper download fallbacks. All remain opt-in while live smoke testing is pending.
 
 - Updated `--skip` integration for current `ani-skip` by passing provider-supplied MAL ids through the direct `-i/--id` interface instead of the legacy numeric `-q/--query` compatibility path.
 

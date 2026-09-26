@@ -150,6 +150,9 @@ The default automatic provider chain is deliberately **HiAnime only**.
 |---|---|---:|
 | HiAnime | primary | yes |
 | AniLight | experimental / opt-in | no |
+| KickAssAnime | experimental / opt-in | no |
+| AniNeko | experimental / opt-in | no |
+| AniKoto | experimental / opt-in | no |
 | Kuhi | experimental / opt-in | no |
 | AnimeKai | experimental / manual | no |
 
@@ -158,8 +161,11 @@ Examples:
 ```sh
 ani-py --provider hianime "frieren"
 ani-py --provider anilight "frieren"
+ani-py --provider kaa "naruto"
+ani-py --provider anineko "naruto"
+ani-py --provider anikoto "naruto"
 ani-py --provider kuhi "frieren"
-ani-py --provider-order hianime,anilight "frieren"
+ani-py --provider-order hianime,anilight,kaa "frieren"
 ```
 
 AniLight is registered as an experimental direct provider. The initial adapter
@@ -169,6 +175,14 @@ Sub and dub are supported where that source has coverage; the sub route is
 hard-subbed. Broader soft-sub/MegaPlay backends are intentionally deferred until
 their changing CDN/proxy behavior is proven against ani-py's desktop and Android
 playback paths. AniLight is not part of the default automatic chain yet.
+
+KickAssAnime, AniNeko, and AniKoto are also direct experimental adapters.
+KickAssAnime uses its JSON show/episode API and direct HLS manifests. AniNeko
+scrapes its episode/server HTML and resolves direct HLS from the selected embed.
+AniKoto uses its AJAX episode/server endpoints and prefers direct HLS/MP4
+candidates, including its optional mapper download links. They remain opt-in
+until live desktop and Termux smoke tests establish which are reliable enough
+for automatic failover.
 
 AnimeKai has no trusted default domain and requires an explicitly configured compatible mirror.
 
@@ -225,6 +239,11 @@ ANI_PY_PROVIDER
 ANI_PY_PROVIDER_ORDER
 ANI_PY_ANILIGHT_URL
 ANI_PY_ANILIGHT_API_URL
+ANI_PY_KAA_URL
+ANI_PY_KAA_HLS_URL
+ANI_PY_ANINEKO_URL
+ANI_PY_ANIKOTO_URL
+ANI_PY_ANIKOTO_MAPPER_URL
 ANI_PY_KUHI_URL
 ANI_PY_ANIMEKAI_URL
 ANI_PY_MODE
