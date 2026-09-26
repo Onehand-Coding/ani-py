@@ -17,16 +17,20 @@ The default automatic order is:
 hianime
 ```
 
-AniLight is implemented directly against `api.anilight.live` and MegaPlay.
-Search results use AniList ids plus the AniLight slug for provider identity.
-Episode resolution supports sub/dub, direct HLS, WebVTT subtitle tracks, MAL
-metadata where available, and provider-supplied intro/outro timestamps. The HLS
-and subtitle requests use the MegaPlay Referer, so the same Android loopback
-relay used by HiAnime can carry the stream without a separate browser backend.
+AniLight is implemented directly against `api.anilight.live`. Search
+results use AniList ids plus the AniLight slug for provider identity, while the
+watch response supplies AniLight's separate numeric id for source lookups.
+
+The initial playback path deliberately uses AniLight's `ryu`/AnimeGG backend
+through AniLight's stable API proxy. It returns progressive quality-labelled
+streams and avoids the HLS segment rewriting required by several other AniLight
+backends. Sub and dub are supported where `ryu` has coverage; its sub stream is
+hard-subbed rather than a separate WebVTT track. If that portable source is
+missing, AniLight fails cleanly so normal provider failover can continue.
 
 AniLight remains opt-in until it has passed the project's live desktop and
-Termux smoke matrix. Provider-native skip timestamps are preserved in
-`StreamBundle`; `--skip` still uses `ani-skip` for playback at this stage.
+Termux smoke matrix. Soft-sub/MegaPlay support and provider-native skip metadata
+are not claimed by this adapter yet; `--skip` continues to use `ani-skip`.
 
 Kuhi remains available for explicit use or a user-configured failover order, but a configured endpoint must pass a media extraction preflight before automatic use. The previously used public Kuhi deployment has been unreliable/undeployed.
 
