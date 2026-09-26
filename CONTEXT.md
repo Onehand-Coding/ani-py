@@ -243,6 +243,9 @@ flags safely; private socket avoids hijacking the user's mpv.
   orphan player + IPC socket behind; check `pgrep -f mpv` after failures.
 - `pkill -f <pattern>` matches your own shell's command line; exclude
   self before killing test players.
+- `fzf --ansi` strips ANSI codes from its output, so menu rows built
+  with `sty()` never round-trip exactly - match picks ANSI-insensitively
+  (see `_strip_ansi`; `_from_history` regressed as `ValueError` on Termux).
 
 **Assumptions to avoid:**
 - Never assume every episode exposes the same quality renditions.

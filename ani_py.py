@@ -79,6 +79,14 @@ def sty(text: str, *codes: str) -> str:
     return "".join(codes) + text + C.RESET
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(value: str) -> str:
+    """Remove ANSI color codes (fzf --ansi strips them from its output)."""
+    return _ANSI_RE.sub("", value)
+
+
 def term_width(default: int = 88) -> int:
     try:
         return shutil.get_terminal_size((default, 24)).columns
@@ -2863,6 +2871,8 @@ class App:
             picked = self.menu.choose(rows, "Anime › ")
             if not picked:
                 raise SystemExit(0)
+            if picked[0] not in mapping:
+                fail("Selection did not match any result.")
             chosen = mapping[picked[0]]
         provider = self.providers.get(chosen.provider)
         ok(f"Selected {chosen.title}  [{provider.display_name}]")
@@ -2876,10 +2886,22 @@ class App:
             f"{e.title}  {sty('•', C.DIM)}  last watched {e.episode}  {sty('• ' + e.provider, C.DIM)}"
             for e in entries
         ]
+        mapping = dict(zip(rows, entries))
         picked = self.menu.choose(rows, "Continue › ")
         if not picked:
             raise SystemExit(0)
-        entry = entries[rows.index(picked[0])]
+        if picked[0] in mapping:
+            entry = mapping[picked[0]]
+        else:
+            # fzf --ansi strips ANSI codes from its output, so fall back
+            # to an ANSI-insensitive match before giving up.
+            stripped_rows = [_strip_ansi(r) for r in rows]
+            needle = _strip_ansi(picked[0])
+            if needle in stripped_rows:
+                entry = entries[stripped_rows.index(needle)]
+            else:
+                fail("History selection did not match any entry.")
+                raise SystemExit(1)
         return Anime(entry.provider_id, entry.title, entry.provider), entry.episode
 
     @staticmethod
@@ -2922,7 +2944,17 @@ class App:
             compact=len(rows) <= 8,
             header=f"Primary source failed. Match {original.title} on a backup provider:",
         )
-        return mapping.get(chosen[0]) if chosen else None
+        if not chosen:
+            return None
+        picked_candidate = mapping.get(chosen[0])
+        if picked_candidate is not None:
+            return picked_candidate
+        # fzf --ansi strips ANSI codes from its output.
+        needle = _strip_ansi(chosen[0])
+        for row, candidate in mapping.items():
+            if _strip_ansi(row) == needle:
+                return candidate
+        return None
 
     def _find_fallback_anime(self, anime: Anime) -> Optional[Anime]:
         cached = self.fallback_map.get((anime.provider, anime.provider_id))
@@ -3143,8 +3175,12 @@ class App:
                 rows, mapping = format_episode_rows(episodes)
                 chosen = self.menu.choose(rows, "Episode › ")
                 if chosen:
-                    current = mapping[chosen[0]]
-                    self._play_episode(anime, current, quality, replace=True)
+                    picked_episode = mapping.get(chosen[0])
+                    if picked_episode is None:
+                        warn("Episode selection did not match any entry.")
+                    else:
+                        current = picked_episode
+                        self._play_episode(anime, current, quality, replace=True)
             elif action == "Change quality":
                 bundle = self._bundle(anime, current)
                 qrows = list(dict.fromkeys(s.quality for s in bundle.streams))

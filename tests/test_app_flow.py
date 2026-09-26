@@ -88,6 +88,29 @@ class TestAppFlow(unittest.TestCase):
             used_anime, episodes, selected = app._pick_episodes(anime, last)
         self.assertEqual(selected[0].number, "2")
 
+    def test_from_history_tolerates_fzf_ansi_stripping(self):
+        import re
+        app = object.__new__(ani_py.App)
+        app.args = argparse.Namespace(episode=None, provider="auto", select_nth=None)
+        app.history = Mock()
+        app.history.load.return_value = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren"),
+            ani_py.HistoryEntry("2", "hianime", "one-piece-1", "One Piece"),
+        ]
+        app.menu = Mock()
+
+        def fake_choose(rows, *args, **kwargs):
+            # fzf --ansi strips ANSI codes from its output, so the
+            # returned line is the plain (unstyled) row.
+            return [re.sub(r"\x1b\[[0-9;]*m", "", rows[0])]
+
+        app.menu.choose.side_effect = fake_choose
+        with patch("ani_py.color_enabled", return_value=True):
+            with patch("ani_py.sys.stderr", new=io.StringIO()):
+                anime, last = app._from_history()
+        self.assertEqual(anime.slug, "frieren-999")
+        self.assertEqual(last, "1")
+
     def test_select_nth_bypasses_menu(self):
         app = object.__new__(ani_py.App)
         app.args = argparse.Namespace(select_nth=2, provider="auto")
