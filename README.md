@@ -172,11 +172,12 @@ After a normal single-episode launch, ani-py offers:
 - Previous episode
 - Replay
 - Choose episode
+- Search another anime
 - Change quality
 - Detach & exit
 - Stop & quit
 
-Desktop mpv uses a private JSON IPC socket and replaces the active item in place when possible. Multi-episode ranges run sequentially.
+Desktop mpv uses a private JSON IPC socket and replaces the active item in place when possible. Multi-episode ranges run sequentially. `Search another anime` keeps the current player running while you search and replaces playback only after you choose a new title and episode.
 
 ## Downloads and skipping
 

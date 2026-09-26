@@ -2,6 +2,8 @@
 
 ## Unreleased (0.5.2-rc9)
 
+- Added `Search another anime` to the interactive playback menu. The current player stays running while a new title and episode are selected, then playback is replaced in the same ani-py session.
+
 - Kept the default automatic provider order at `hianime` only; Kuhi and
   AnimeKai remain experimental opt-in providers.
 - Android subtitles use the loopback HLS relay as a native subtitle rendition.
