@@ -2,6 +2,11 @@
 
 ## Unreleased (0.5.2-rc9)
 
+- Added an experimental direct AniLight provider using its JSON catalog and
+  MegaPlay source flow: AniList/slug identity, sub/dub episode mapping, HLS
+  variants, WebVTT subtitle metadata, MAL ids where exposed, and provider
+  intro/outro timestamps. AniLight remains opt-in and is not in the default
+  automatic chain yet.
 - Kept the default automatic provider order at `hianime` only; Kuhi and
   AnimeKai remain experimental opt-in providers.
 - Android subtitles use the loopback HLS relay as a native subtitle rendition.
