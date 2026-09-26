@@ -189,13 +189,14 @@ failover enabled (rejected: slow confusing failures instead of clean skip).
 
 ### AniLight direct provider
 **Choice:** Add AniLight as an experimental direct provider using
-`api.anilight.live` for catalog/episode data and MegaPlay for direct HLS,
-subtitle tracks, and intro/outro timestamps. Keep it out of the default
+`api.anilight.live` for catalog/episode data and the current portable
+`ryu`/AnimeGG source through AniLight's own proxy. Keep it out of the default
 automatic chain until live desktop and Termux smoke testing is complete.
 **Status:** Current
 **Reason:** It fits the stdlib + curl architecture better than providers that
-require browser automation or hosted scraper dependencies, and its Referer-
-protected HLS model is compatible with the existing Android relay.
+require browser automation or third-party hosted scraper dependencies. AniLight
+also exposes broader HLS/soft-sub backends, but their current CDN/proxy rules are
+more complex and are deliberately deferred until playback behavior is proven.
 **Alternatives Considered:** Making it the default backup immediately
 (rejected until live acceptance); AnimePahe/Miruro direct adapters (deferred
 because their current anti-bot requirements conflict with the lightweight
@@ -342,7 +343,7 @@ ANI_PY_DOWNLOAD_DIR=/tmp/x          # redirect downloads
 | Service | Purpose |
 |---|---|
 | hianime (scraped) | Primary: search, episodes, stream/subtitle resolve |
-| AniLight + MegaPlay | Experimental direct backup: AniList/slug search, sub/dub HLS, WebVTT subtitles, MAL metadata, intro/outro timestamps |
+| AniLight | Experimental direct backup: AniList/slug search, sub/dub portable progressive source via AniLight API proxy, MAL metadata |
 | AnimeKai (scraped) | Experimental backup via AJAX + `enc-dec.app` token/decryption helper; no trusted default domain (explicit mirror required) |
 | Kuhi (API) | Experimental backup via AniList search + stream extraction; deep media preflight required; default public instance currently undeployed |
 | CDN media hosts | HLS segments, subtitle files |
