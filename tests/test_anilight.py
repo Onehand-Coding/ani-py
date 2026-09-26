@@ -187,6 +187,7 @@ class TestAniLightProvider(unittest.TestCase):
             f"{ani_py.MEGAPLAY_BASE_URL}/stream/getSourcesNew?id=500"
         ] = {"sources": {"file": "https://cdn.example/video.m3u8"}}
         http.text_responses["https://cdn.example/video.m3u8"] = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n"
+        provider._info_cache[anime.provider_id] = {"idMal": 20}
 
         bundle = provider.resolve(anime, ani_py.Episode("1", "1"), "sub")
         self.assertEqual(bundle.streams, [ani_py.Stream("auto", "https://cdn.example/video.m3u8")])
