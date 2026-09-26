@@ -67,7 +67,12 @@ class TestCLI(unittest.TestCase):
             parser.parse_args(["--android-player", "mpv", "frieren"])
 
     def test_version_is_current(self):
-        self.assertEqual(ani_py.VERSION, "0.5.2-rc9")
+        self.assertEqual(ani_py.VERSION, "0.5.2-rc10")
+
+    def test_anilight_provider_can_be_selected_explicitly(self):
+        parser = ani_py.build_parser()
+        ns = parser.parse_args(["--provider", "anilight", "frieren"])
+        self.assertEqual(ns.provider, "anilight")
 
     def test_default_provider_order_is_hianime_only(self):
         # No unverified provider belongs in the default automatic chain:

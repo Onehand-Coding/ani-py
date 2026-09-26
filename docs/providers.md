@@ -7,6 +7,7 @@ ani-py keeps provider-specific scraping behind adapters so provider changes do n
 | Provider | Status | Automatic by default |
 |---|---|---:|
 | HiAnime | primary | yes |
+| AniLight | experimental / opt-in | no |
 | Kuhi | experimental / opt-in | no |
 | AnimeKai | experimental / manual | no |
 
@@ -15,6 +16,21 @@ The default automatic order is:
 ```text
 hianime
 ```
+
+AniLight is implemented directly against `api.anilight.live`. Search
+results use AniList ids plus the AniLight slug for provider identity, while the
+watch response supplies AniLight's separate numeric id for source lookups.
+
+The initial playback path deliberately uses AniLight's `ryu`/AnimeGG backend
+through AniLight's stable API proxy. It returns progressive quality-labelled
+streams and avoids the HLS segment rewriting required by several other AniLight
+backends. Sub and dub are supported where `ryu` has coverage; its sub stream is
+hard-subbed rather than a separate WebVTT track. If that portable source is
+missing, AniLight fails cleanly so normal provider failover can continue.
+
+AniLight remains opt-in until it has passed the project's live desktop and
+Termux smoke matrix. Soft-sub/MegaPlay support and provider-native skip metadata
+are not claimed by this adapter yet; `--skip` continues to use `ani-skip`.
 
 Kuhi remains available for explicit use or a user-configured failover order, but a configured endpoint must pass a media extraction preflight before automatic use. The previously used public Kuhi deployment has been unreliable/undeployed.
 
@@ -30,8 +46,9 @@ ANI_PY_ANIMEKAI_URL=https://your-mirror.example \
 ```sh
 ani-py --list-providers
 ani-py --provider hianime "frieren"
+ani-py --provider anilight "frieren"
 ani-py --provider kuhi "frieren"
-ani-py --provider-order hianime,kuhi "frieren"
+ani-py --provider-order hianime,anilight "frieren"
 ```
 
 Environment overrides:
@@ -39,6 +56,8 @@ Environment overrides:
 ```text
 ANI_PY_PROVIDER
 ANI_PY_PROVIDER_ORDER
+ANI_PY_ANILIGHT_URL
+ANI_PY_ANILIGHT_API_URL
 ANI_PY_KUHI_URL
 ANI_PY_ANIMEKAI_URL
 ```

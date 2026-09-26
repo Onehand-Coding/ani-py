@@ -1,9 +1,14 @@
 # Changelog
 
-## Unreleased (0.5.2-rc9)
+## Unreleased (0.5.2-rc10)
 
+- Added an experimental direct AniLight provider using its current JSON API:
+  AniList/slug identity, AniLight numeric source ids, sub/dub episode mapping,
+  MAL ids where exposed, and the portable `ryu`/AnimeGG progressive source
+  through AniLight's own proxy. Broader soft-sub/HLS backends are deferred
+  until their current CDN/proxy behavior is live-tested with ani-py. AniLight
+  remains opt-in and is not in the default automatic chain yet.
 - Added `Search another anime` to the interactive playback menu. The current player stays running while a new title and episode are selected, then playback is replaced in the same ani-py session.
-
 - Kept the default automatic provider order at `hianime` only; Kuhi and
   AnimeKai remain experimental opt-in providers.
 - Android subtitles use the loopback HLS relay as a native subtitle rendition.
