@@ -45,8 +45,6 @@ ANIMEKAI_BASE_URL = ""  # no trusted default; set ANI_PY_ANIMEKAI_URL explicitly
 KUHI_BASE_URL = "https://anime-scraper-v2.vercel.app"
 ANILIGHT_BASE_URL = "https://anilight.live"
 ANILIGHT_API_URL = "https://api.anilight.live/api"
-MEGAPLAY_BASE_URL = "https://megaplay.buzz"
-MEGAPLAY_REFERER = "https://megaplay.buzz/"
 ANIMEKAI_ENC_URL = "https://enc-dec.app/api/enc-kai"
 ANIMEKAI_DEC_KAI_URL = "https://enc-dec.app/api/dec-kai"
 ANIMEKAI_DEC_MEGA_URL = "https://enc-dec.app/api/dec-mega"
@@ -165,8 +163,6 @@ class StreamBundle:
     provider: str = "unknown"
     subtitle_language: Optional[str] = None
     subtitle_label: Optional[str] = None
-    intro: Optional[tuple[float, float]] = None
-    outro: Optional[tuple[float, float]] = None
 
 
 @dataclasses.dataclass
@@ -646,25 +642,34 @@ class HianimeProvider(Provider):
 # ---------- AniLight experimental provider ----------
 
 class AniLightProvider(Provider):
-    """AniList-keyed AniLight adapter backed by MegaPlay HLS streams.
+    """AniLight catalog + currently playable direct-source adapter.
 
-    AniLight exposes search/catalog/episode JSON through api.anilight.live.
-    Episode playback resolves through MegaPlay, whose source response includes
-    the HLS master, subtitle tracks, and optional intro/outro timestamps.
+    AniLight exposes catalog/episode JSON through api.anilight.live. Its source
+    endpoint fans out to several upstream servers. For the initial ani-py
+    adapter we deliberately use the "ryu" / AnimeGG route because it returns
+    progressive MP4 files and AniLight's own proxy makes those URLs portable
+    across desktop and Android players without provider-specific HLS surgery.
+
+    Other AniLight backends expose soft subtitles and broader coverage, but
+    currently require changing CDN/proxy rules. Keep those out until their
+    playback behavior is proven against ani-py's desktop and Android paths.
     """
 
     name = "anilight"
     display_name = "AniLight"
     capabilities = ProviderCapabilities(
-        sub=True, dub=True, subtitles=True, qualities=True, mal_id=True
+        sub=True, dub=True, subtitles=False, qualities=True, mal_id=True
     )
     experimental = True
+
+    SOURCE_PROVIDER = "ryu"
 
     def __init__(self, http: HttpClient) -> None:
         self.http = http
         self.base = os.getenv("ANI_PY_ANILIGHT_URL", ANILIGHT_BASE_URL).rstrip("/")
         self.api = os.getenv("ANI_PY_ANILIGHT_API_URL", ANILIGHT_API_URL).rstrip("/")
         self._available: Optional[bool] = None
+        self._watch_cache: dict[str, dict[str, object]] = {}
         self._episode_cache: dict[str, dict[str, dict[str, object]]] = {}
         self._info_cache: dict[str, dict[str, object]] = {}
 
@@ -674,12 +679,6 @@ class AniLightProvider(Provider):
             "Origin": self.base,
             "Accept": "application/json,text/plain,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "cross-site",
         }
 
     def _api_json(self, path: str, *, timeout: int = 15) -> object:
@@ -738,7 +737,7 @@ class AniLightProvider(Provider):
         return []
 
     def available(self) -> bool:
-        """Lightweight API preflight for user-configured automatic failover."""
+        """Memoized API preflight for user-configured automatic failover."""
         if self._available is not None:
             return self._available
         try:
@@ -782,12 +781,16 @@ class AniLightProvider(Provider):
 
     def _watch_doc(self, anime: Anime | str) -> dict[str, object]:
         provider_id = _provider_id(anime)
+        cached = self._watch_cache.get(provider_id)
+        if cached is not None:
+            return cached
         _, slug = self._parse_provider_id(provider_id)
         if not slug:
             raise AnimeNotFound("AniLight anime id did not contain a slug.")
         data = self._api_json("/watch/" + quote(slug, safe="-._~"), timeout=20)
         if not isinstance(data, dict):
             raise ProviderChanged("AniLight watch response was not an object.")
+        self._watch_cache[provider_id] = data
         return data
 
     def _episode_rows(self, anime: Anime | str) -> dict[str, dict[str, object]]:
@@ -809,8 +812,7 @@ class AniLightProvider(Provider):
             if not isinstance(item, dict):
                 continue
             number = self._number(item.get("number"))
-            embeds = item.get("embed_url")
-            if number and isinstance(embeds, dict):
+            if number:
                 rows[number] = item
         self._episode_cache[provider_id] = rows
         return rows
@@ -827,81 +829,26 @@ class AniLightProvider(Provider):
             raise EpisodeNotFound(f"AniLight returned no episodes for {_provider_id(anime)}.")
         return episodes
 
-    @staticmethod
-    def _real_id(embed_url: str) -> Optional[str]:
-        match = re.search(r"/stream/[^/]+/(\d+)/(?:sub|dub)(?:[/?#]|$)", embed_url)
-        if not match:
-            match = re.search(r"/(\d+)/(?:sub|dub)(?:[/?#]|$)", embed_url)
-        return match.group(1) if match else None
+    def _numeric_id(self, anime: Anime | str) -> Optional[str]:
+        provider_id = _provider_id(anime)
+        watch = self._watch_doc(anime)
+        ident = watch.get("id")
+        if ident is not None:
+            return str(ident)
 
-    def _megaplay_variants(self, real_id: str, embed_url: str) -> list[dict[str, object]]:
-        url = f"{MEGAPLAY_BASE_URL}/api/{quote(real_id, safe='')}"
-        try:
-            data = self.http.get_json(
-                url,
-                referer=embed_url,
-                headers={
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Accept": "application/json, text/javascript, */*; q=0.01",
-                },
-                timeout=15,
-            )
-        except HttpError as exc:
-            raise ProviderUnavailable(f"AniLight MegaPlay variant lookup failed: {exc}") from exc
-        if isinstance(data, dict):
-            rows = data.get("data") or data.get("results")
-        else:
-            rows = data
-        return [x for x in rows if isinstance(x, dict)] if isinstance(rows, list) else []
-
-    def _megaplay_sources(self, episode_id: object) -> dict[str, object]:
-        url = f"{MEGAPLAY_BASE_URL}/stream/getSourcesNew?{urlencode({'id': episode_id})}"
-        try:
-            data = self.http.get_json(
-                url,
-                referer=self.base + "/",
-                headers={
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Accept": "application/json, text/javascript, */*; q=0.01",
-                },
-                timeout=15,
-            )
-        except HttpError as exc:
-            raise ProviderUnavailable(f"AniLight MegaPlay source lookup failed: {exc}") from exc
-        if not isinstance(data, dict):
-            raise ProviderChanged("AniLight MegaPlay source response was not an object.")
-        return data
-
-    @staticmethod
-    def _source_url(payload: dict[str, object]) -> Optional[str]:
-        sources = payload.get("sources")
-        if isinstance(sources, dict):
-            for key in ("file", "url", "src"):
-                value = sources.get(key)
-                if isinstance(value, str) and value.startswith(("http://", "https://")):
-                    return value
-        if isinstance(sources, list):
-            for item in sources:
-                if not isinstance(item, dict):
-                    continue
-                for key in ("file", "url", "src"):
-                    value = item.get(key)
-                    if isinstance(value, str) and value.startswith(("http://", "https://")):
-                        return value
-        return None
-
-    @staticmethod
-    def _skip_range(value: object) -> Optional[tuple[float, float]]:
-        if not isinstance(value, dict):
+        cached = self._info_cache.get(provider_id)
+        if not isinstance(cached, dict):
+            _, slug = self._parse_provider_id(provider_id)
+            if not slug:
+                return None
+            data = self._api_json("/anime/" + quote(slug, safe="-._~"), timeout=12)
+            cached = data if isinstance(data, dict) else None
+            if isinstance(cached, dict):
+                self._info_cache[provider_id] = cached
+        if not isinstance(cached, dict):
             return None
-        try:
-            start = float(value.get("start", 0))
-            end = float(value.get("end", 0))
-        except (TypeError, ValueError):
-            return None
-        if start < 0 or end <= start:
-            return None
-        return start, end
+        ident = cached.get("id")
+        return str(ident) if ident is not None else None
 
     def _mal_id(self, anime: Anime | str) -> Optional[str]:
         provider_id = _provider_id(anime)
@@ -922,73 +869,79 @@ class AniLightProvider(Provider):
         value = cached.get("idMal") or cached.get("malId") or cached.get("mal_id")
         return str(value) if value is not None else None
 
+    def _sources(self, anime_id: str, episode: str, mode: str) -> dict[str, object]:
+        path = "/sources?" + urlencode({
+            "id": anime_id,
+            "epNum": episode,
+            "type": mode,
+            "providerId": self.SOURCE_PROVIDER,
+        })
+        data = self._api_json(path, timeout=20)
+        if not isinstance(data, dict):
+            raise ProviderChanged("AniLight source response was not an object.")
+        return data
+
+    @staticmethod
+    def _quality(value: object) -> str:
+        text = str(value or "auto").strip()
+        if re.fullmatch(r"\d{3,4}", text):
+            return text + "p"
+        return text or "auto"
+
+    def _proxy_url(self, upstream: str) -> str:
+        # AniLight's stable API endpoint chooses the current worker/CDN for the
+        # AnimeGG route. Do not hardcode the rotating worker hostname itself.
+        return self.api + "/proxy/ryu?" + urlencode({"url": upstream})
+
     def resolve(self, anime: Anime | str, episode: Episode, mode: str) -> StreamBundle:
-        provider_id = _provider_id(anime)
-        rows = self._episode_rows(anime)
-        row = rows.get(episode.number)
+        if mode not in {"sub", "dub"}:
+            raise StreamNotFound(f"AniLight does not support mode {mode!r}.")
+
+        row = self._episode_rows(anime).get(episode.number)
         if not row:
             raise EpisodeNotFound(f"AniLight episode {episode.number} was not found.")
 
         embeds = row.get("embed_url")
-        if not isinstance(embeds, dict):
-            raise ProviderChanged("AniLight episode did not contain embed URLs.")
-        embed_url = embeds.get(mode)
-        if not isinstance(embed_url, str) or not embed_url:
-            raise StreamNotFound(f"AniLight has no {mode} source for episode {episode.number}.")
+        if isinstance(embeds, dict):
+            marker = embeds.get(mode)
+            if not isinstance(marker, str) or not marker:
+                raise StreamNotFound(f"AniLight has no {mode} version for episode {episode.number}.")
 
-        real_id = self._real_id(embed_url)
-        if not real_id:
-            raise ProviderChanged("AniLight MegaPlay embed id could not be parsed.")
+        anime_id = self._numeric_id(anime)
+        if not anime_id:
+            raise ProviderChanged("AniLight watch response did not expose its numeric anime id.")
 
-        variants = self._megaplay_variants(real_id, embed_url)
-        wanted = mode.lower()
-        chosen = next((v for v in variants if str(v.get("type") or "").lower() == wanted), None)
-        if chosen is None and wanted == "sub":
-            chosen = next((v for v in variants if str(v.get("type") or "").lower() == "hsub"), None)
-        if chosen is None:
-            raise StreamNotFound(f"AniLight MegaPlay returned no {mode} variant for episode {episode.number}.")
+        payload = self._sources(anime_id, episode.number, mode)
+        raw_sources = payload.get("sources")
+        if not isinstance(raw_sources, list):
+            raise ProviderChanged("AniLight source response did not contain a sources list.")
 
-        episode_id = chosen.get("episode_id") or chosen.get("episodeId") or chosen.get("id")
-        if episode_id is None:
-            raise ProviderChanged("AniLight MegaPlay variant had no episode id.")
+        streams: list[Stream] = []
+        seen: set[str] = set()
+        for item in raw_sources:
+            if not isinstance(item, dict):
+                continue
+            upstream = item.get("url") or item.get("file")
+            if not isinstance(upstream, str) or not upstream.startswith(("http://", "https://")):
+                continue
+            proxied = self._proxy_url(upstream)
+            if proxied in seen:
+                continue
+            streams.append(Stream(self._quality(item.get("quality")), proxied))
+            seen.add(proxied)
 
-        payload = self._megaplay_sources(episode_id)
-        master_url = self._source_url(payload)
-        if not master_url:
-            raise StreamNotFound("AniLight MegaPlay response contained no direct stream.")
-
-        tracks = payload.get("tracks")
-        subtitle = subtitle_language = subtitle_label = None
-        if isinstance(tracks, list):
-            caption_tracks = [
-                t for t in tracks
-                if isinstance(t, dict)
-                and str(t.get("kind") or "").lower() in {"captions", "subtitles", ""}
-            ]
-            subtitle, subtitle_language, subtitle_label = HianimeProvider._pick_subtitle_info(
-                {"subtitles": caption_tracks}
+        if not streams:
+            raise StreamNotFound(
+                f"AniLight's portable source has no {mode} stream for episode {episode.number}."
             )
 
-        streams = [Stream(quality="auto", url=master_url)]
-        if ".m3u8" in urlsplit(master_url).path.lower():
-            try:
-                master = self.http.get(master_url, referer=MEGAPLAY_REFERER, timeout=15)
-                parsed = HianimeProvider._parse_master(master, master_url)
-                if parsed:
-                    streams = parsed
-            except HttpError:
-                pass
-
+        streams.sort(key=stream_rank, reverse=True)
         return StreamBundle(
             streams=streams,
-            subtitle=subtitle,
-            referer=MEGAPLAY_REFERER,
-            mal_id=self._mal_id(provider_id),
+            subtitle=None,
+            referer=self.base + "/",
+            mal_id=self._mal_id(anime),
             provider=self.name,
-            subtitle_language=subtitle_language,
-            subtitle_label=subtitle_label,
-            intro=self._skip_range(payload.get("intro")),
-            outro=self._skip_range(payload.get("outro")),
         )
 
 
