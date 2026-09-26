@@ -150,6 +150,7 @@ class TestAniLightProvider(unittest.TestCase):
         http.json_responses[source_url] = {
             "sources": [{"url": "https://animegg.example/naruto.mp4", "quality": "720p"}]
         }
+        provider._info_cache[anime.provider_id] = {"id": 4321, "idMal": 20}
 
         provider.resolve(anime, ani_py.Episode("1", "1"), "sub")
         source_calls = [c for c in http.calls if "/sources?" in c[1]]
