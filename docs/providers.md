@@ -8,6 +8,9 @@ ani-py keeps provider-specific scraping behind adapters so provider changes do n
 |---|---|---:|
 | HiAnime | primary | yes |
 | AniLight | experimental / opt-in | no |
+| KickAssAnime | experimental / opt-in | no |
+| AniNeko | experimental / opt-in | no |
+| AniKoto | experimental / opt-in | no |
 | Kuhi | experimental / opt-in | no |
 | AnimeKai | experimental / manual | no |
 
@@ -32,6 +35,14 @@ AniLight remains opt-in until it has passed the project's live desktop and
 Termux smoke matrix. Soft-sub/MegaPlay support and provider-native skip metadata
 are not claimed by this adapter yet; `--skip` continues to use `ani-skip`.
 
+KickAssAnime is implemented against its JSON search/show/episode endpoints and
+returns direct HLS with the required stream referer plus an `Origin` header that
+its segment host enforces (sent for mpv playback and downloads). AniNeko uses its public
+HTML episode/server pages and extracts direct HLS from embed pages. AniKoto
+uses its AJAX episode/server endpoints, preserves MAL ids for `--skip`, and
+tries direct HLS/MP4 sources plus mapper-provided download links. All three are
+experimental and opt-in until live provider testing is complete.
+
 Kuhi remains available for explicit use or a user-configured failover order, but a configured endpoint must pass a media extraction preflight before automatic use. The previously used public Kuhi deployment has been unreliable/undeployed.
 
 AnimeKai has no trusted hardcoded default domain. A compatible mirror must be supplied explicitly:
@@ -47,8 +58,11 @@ ANI_PY_ANIMEKAI_URL=https://your-mirror.example \
 ani-py --list-providers
 ani-py --provider hianime "frieren"
 ani-py --provider anilight "frieren"
+ani-py --provider kaa "naruto"
+ani-py --provider anineko "naruto"
+ani-py --provider anikoto "naruto"
 ani-py --provider kuhi "frieren"
-ani-py --provider-order hianime,anilight "frieren"
+ani-py --provider-order hianime,anilight,kaa "frieren"
 ```
 
 Environment overrides:
@@ -58,6 +72,11 @@ ANI_PY_PROVIDER
 ANI_PY_PROVIDER_ORDER
 ANI_PY_ANILIGHT_URL
 ANI_PY_ANILIGHT_API_URL
+ANI_PY_KAA_URL
+ANI_PY_KAA_HLS_URL
+ANI_PY_ANINEKO_URL
+ANI_PY_ANIKOTO_URL
+ANI_PY_ANIKOTO_MAPPER_URL
 ANI_PY_KUHI_URL
 ANI_PY_ANIMEKAI_URL
 ```
