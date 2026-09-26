@@ -206,7 +206,7 @@ Intro/outro skipping is a desktop-mpv integration:
 ani-py --skip "frieren"
 ```
 
-ani-py calls `ani-skip -q <mal-id> -e <episode>` when the active provider exposes a MAL id. Android intent players, VLC, IINA, and generic custom players do not receive ani-skip mpv flags.
+ani-py calls `ani-skip -i <mal-id> -e <episode>` when the active provider exposes a MAL id. Android intent players, VLC, IINA, and generic custom players do not receive ani-skip mpv flags.
 
 ## Configuration
 

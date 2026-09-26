@@ -2,6 +2,8 @@
 
 ## Unreleased (0.5.2-rc10)
 
+- Updated `--skip` integration for current `ani-skip` by passing provider-supplied MAL ids through the direct `-i/--id` interface instead of the legacy numeric `-q/--query` compatibility path.
+
 - Added an experimental direct AniLight provider using its current JSON API:
   AniList/slug identity, AniLight numeric source ids, sub/dub episode mapping,
   MAL ids where exposed, and the portable `ryu`/AnimeGG progressive source

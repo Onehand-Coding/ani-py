@@ -27,7 +27,7 @@ class TestAniSkip(unittest.TestCase):
 
     @patch("ani_py.run_capture")
     @patch("ani_py.shutil.which", return_value="/usr/bin/ani-skip")
-    def test_skip_uses_query_flag_and_parses_mpv_flags(self, mock_which, mock_run):
+    def test_skip_uses_direct_mal_id_and_parses_mpv_flags(self, mock_which, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
             args=[],
             returncode=0,
@@ -37,7 +37,7 @@ class TestAniSkip(unittest.TestCase):
         pb = self.make_playback()
         result = pb._skip_args("52299", "5")
 
-        mock_run.assert_called_once_with(["/usr/bin/ani-skip", "-q", "52299", "-e", "5"])
+        mock_run.assert_called_once_with(["/usr/bin/ani-skip", "-i", "52299", "-e", "5"])
         self.assertEqual(
             result,
             ["--chapters-file=/tmp/chapters", "--script-opts=skip-op_start=12.5,skip-op_end=101.2"],

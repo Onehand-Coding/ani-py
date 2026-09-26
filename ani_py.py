@@ -2665,9 +2665,9 @@ class Playback:
     def _skip_args(self, mal_id: Optional[str], episode: str) -> list[str]:
         """Return episode-specific mpv flags from ani-skip.
 
-        ani-skip 1.x uses -q/--query for the anime identifier.  A missing MAL
-        id or a failing ani-skip invocation should never fail playback, but it
-        must be visible to the user instead of silently disabling --skip.
+        Current ani-skip accepts a known MyAnimeList id directly with -i/--id.
+        A missing MAL id or a failing ani-skip invocation should never fail
+        playback, but it must be visible instead of silently disabling --skip.
         """
         if not self.args.skip:
             return []
@@ -2678,10 +2678,9 @@ class Playback:
         if not exe:
             warn("--skip requested, but ani-skip is not installed.")
             return []
-        # ani-skip 1.x accepts the anime identifier through -q/--query.
-        # Numeric MAL IDs work as query values, so use the documented interface
-        # directly instead of probing an incompatible flag first.
-        command = [exe, "-q", mal_id, "-e", episode]
+        # Providers already give us the MAL id, so use ani-skip's direct-id
+        # interface instead of sending a numeric id through the query path.
+        command = [exe, "-i", mal_id, "-e", episode]
         proc = run_capture(command)
         if proc.returncode != 0:
             detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
