@@ -3256,13 +3256,17 @@ class Playback:
 
         if subtitle:
             curl = HttpClient().exe
-            raw_tag = subtitle_language or subtitle_label or "sub"
-            tag = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_tag).strip("-._") or "sub"
+            raw_tag = subtitle_language or subtitle_label
             suffix = _subtitle_suffix_for(subtitle)
+            if raw_tag:
+                tag = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_tag).strip("-._") or "sub"
+                subtitle_name = f"{safe}.{tag}{suffix}"
+            else:
+                subtitle_name = f"{safe}{suffix}"
             sub_cmd = [
                 curl, "--fail", "-sS", "-L", "--max-time", "30",
                 "-A", USER_AGENT, "-e", referer, subtitle,
-                "-o", str(outdir / f"{safe}.{tag}{suffix}"),
+                "-o", str(outdir / subtitle_name),
             ]
             sub_proc = subprocess.run(sub_cmd)
             if sub_proc.returncode != 0:
