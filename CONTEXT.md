@@ -50,7 +50,7 @@ networking, menus, playback, and downloads to best-of-breed external tools.
 |---|---|
 | Testing | stdlib `unittest` only (no pytest) |
 | Build | `scripts/build-standalone.sh` → `dist/ani-py` |
-| Tool check | `scripts/check-tools.sh` (incl. ani-skip `-q` support) |
+| Tool check | `scripts/check-tools.sh` (incl. ani-skip `-i` support) |
 | CI | GitHub Actions: compile + unittest + standalone build |
 
 ### Infrastructure
@@ -225,7 +225,7 @@ flags safely; private socket avoids hijacking the user's mpv.
 
 ## 9. Domain Knowledge
 
-- The provider MAL id is the key `ani-skip` queries (`-q <mal-id> -e <ep>`).
+- The provider MAL id is the key `ani-skip` input (`-i <mal-id> -e <ep>`).
 - Sub and dub resolve through separate servers/streams.
 - HLS variant sets differ per episode upstream (one episode may offer
   1080/720/360 while another offers 1080-only); quality selection falls
@@ -330,7 +330,7 @@ python3 -m unittest discover -s tests
 **Common debugging:**
 
 ```bash
-./scripts/check-tools.sh            # incl. ani-skip -q support probe
+./scripts/check-tools.sh            # incl. ani-skip -i support probe
 pgrep -a -f 'force-media-title='    # find orphan test players (self-excluding pattern)
 ANI_PY_PLAYER_FLAGS='--vo=null --ao=null --vid=no'  # headless mpv probing
 ANI_PY_DOWNLOAD_DIR=/tmp/x          # redirect downloads

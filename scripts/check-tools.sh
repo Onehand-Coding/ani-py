@@ -40,10 +40,10 @@ fi
 
 if have ani-skip; then
   help="$(ani-skip --help 2>&1 || true)"
-  if printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])-q([,[:space:]]|$)|--query'; then
-    echo "  [ok] ani-skip supports -q/--query"
+  if printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])-i([,[:space:]]|$)|--id'; then
+    echo "  [ok] ani-skip supports -i/--id"
   else
-    echo "  [warn] ani-skip was found, but -q/--query was not detected"
+    echo "  [warn] ani-skip was found, but -i/--id was not detected"
   fi
 fi
 
