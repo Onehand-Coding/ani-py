@@ -21,8 +21,8 @@ It is an independent, AI-assisted implementation inspired by terminal anime laun
 - mpv, VLC, IINA, and custom desktop players
 - VLC for Android and mpv-android from Termux
 - Android HLS relay for Referer-protected streams and subtitles
-- Interactive next / previous / replay / episode / quality controls
-- Private mpv IPC by default; existing global mpv sockets are left alone
+- Interactive next / previous / replay / episode / quality / subtitle controls
+- Private mpv IPC by default, with persistent desktop-mpv detach/reattach controls
 - Downloads through `yt-dlp` with `ffmpeg` fallback
 - Optional `ani-skip` integration for desktop mpv
 - Provider-aware history and opt-in experimental provider adapters
@@ -91,6 +91,8 @@ ani-py --dub -e 1-4 "bleach"
 ani-py -c
 ani-py -d -e 1-12 "pluto"
 ani-py --skip "summer time rendering"
+ani-py --sub-lang de -d -e 1 "one piece"
+ani-py --attach
 ani-py --list-providers
 ```
 
@@ -184,10 +186,15 @@ After a normal single-episode launch, ani-py offers:
 - Choose episode
 - Search another anime
 - Change quality
+- Change subtitle
 - Detach & exit
 - Stop & quit
 
 Desktop mpv uses a private JSON IPC socket and replaces the active item in place when possible. Multi-episode ranges run sequentially. `Search another anime` keeps the current player running while you search and replaces playback only after you choose a new title and episode.
+
+When a provider exposes multiple soft-subtitle tracks, `Change subtitle` can switch them from the controller. Desktop mpv switches live over IPC; other supported players may be relaunched with the selected subtitle. `--sub-lang de` (or another language/label) selects a track for playback and downloads, while `--sub-lang off` disables external subtitles.
+
+For desktop mpv, `Detach & exit` stores enough session metadata to reconnect later. Run `ani-py --attach` to restore the same controller without restarting the video. Launching `ani-py` with no query also offers reattachment when a saved detached mpv session is still alive.
 
 ## Downloads and skipping
 
@@ -198,7 +205,7 @@ ani-py -d -e 1 "frieren"
 ANI_PY_DOWNLOAD_DIR="$HOME/Videos/anime" ani-py -d -e 1-3 "frieren"
 ```
 
-ani-py prefers yt-dlp and falls back to `ffmpeg -c copy`. Provider Referer/User-Agent headers are passed to the download backend.
+ani-py prefers yt-dlp and falls back to `ffmpeg -c copy`. Provider Referer/User-Agent headers are passed to the download backend. When a selected provider exposes soft subtitles, `--sub-lang <language-or-label>` downloads that subtitle beside the video (for example `Episode 1.de.vtt`) without burning it into the media file.
 
 Intro/outro skipping is a desktop-mpv integration:
 
@@ -219,6 +226,7 @@ ANI_PY_IPC_SOCKET
 ANI_PY_MENU
 ANI_PY_MENU_FLAGS
 ANI_PY_DOWNLOAD_DIR
+ANI_PY_SUB_LANG
 ANI_PY_HIST_DIR
 ANI_PY_CURL
 ANI_PY_PROVIDER

@@ -50,6 +50,7 @@ class TestCoreHelpers(unittest.TestCase):
             "https://subs/signs.vtt",
         )
         self.assertIsNone(ani_py.choose_subtitle_track(bundle, "off"))
+        self.assertIsNone(ani_py.choose_subtitle_track(bundle, "fr"))
         self.assertEqual(ani_py.choose_subtitle_track(bundle, "auto").url, "https://subs/en.vtt")
 
     def test_parse_episode_spec_single(self):

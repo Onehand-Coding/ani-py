@@ -39,7 +39,7 @@ from urllib import request as urllib_request
 from urllib.parse import quote, quote_plus, urlencode, urljoin, urlsplit
 
 APP_NAME = "ani-py"
-VERSION = "0.5.2-rc10"
+VERSION = "0.5.2-rc11"
 BASE_URL = "https://hianime.at"
 ANIMEKAI_BASE_URL = ""  # no trusted default; set ANI_PY_ANIMEKAI_URL explicitly
 KUHI_BASE_URL = "https://anime-scraper-v2.vercel.app"
@@ -3356,6 +3356,7 @@ def choose_subtitle_track(bundle: StreamBundle, preference: Optional[str]) -> Op
         partial_label = next((track for track in tracks if folded in (track.label or "").casefold()), None)
         if partial_label:
             return partial_label
+        return None
 
     default = next((track for track in tracks if track.default), None)
     if default:
@@ -3809,6 +3810,7 @@ class App:
         if choice[0] == "Stop playback and search":
             self.playback.stop()
             store.clear()
+            self.playback = Playback(self.args)
             return None
         self.playback.detach()
         return 0
@@ -3873,6 +3875,16 @@ class App:
         bundle = self._bundle(anime, episode)
         stream = choose_quality(bundle.streams, quality)
         subtitle_track = choose_subtitle_track(bundle, self.subtitle_preference)
+        requested_subtitle = (self.subtitle_preference or "auto").strip().casefold()
+        if (
+            bundle.subtitle_tracks()
+            and subtitle_track is None
+            and requested_subtitle not in {"", "auto", "default", "off", "none", "no", "false", "0"}
+        ):
+            warn(
+                f"Subtitle {self.subtitle_preference!r} is not available for this episode; "
+                "continuing without an external subtitle."
+            )
         self.last_stream = stream
         self.last_provider = bundle.provider
         self.last_subtitle = subtitle_track
