@@ -1226,23 +1226,37 @@ class AnimeKaiProvider(Provider):
         return match.group(1) + "p" if match else "auto"
 
     @staticmethod
-    def _subtitle(tracks: object) -> Optional[str]:
+    def _subtitle_tracks(tracks: object) -> list[SubtitleTrack]:
         if not isinstance(tracks, list):
-            return None
-        choices: list[tuple[int, str]] = []
+            return []
+        out: list[SubtitleTrack] = []
+        seen: set[str] = set()
         for item in tracks:
             if not isinstance(item, dict):
                 continue
             url = item.get("file") or item.get("url") or item.get("src")
-            if not isinstance(url, str) or not url:
+            if not isinstance(url, str) or not url or url in seen:
                 continue
             kind = str(item.get("kind") or "").lower()
-            label = str(item.get("label") or "").lower()
-            if kind and kind not in {"captions", "subtitles", "subtitle"} and not url.endswith((".vtt", ".srt", ".ass")):
+            if kind and kind not in {"captions", "subtitles", "subtitle"} and not url.lower().endswith((".vtt", ".srt", ".ass")):
                 continue
-            score = 2 if item.get("default") else 1 if "english" in label or label in {"en", "eng"} else 0
-            choices.append((score, url))
-        return max(choices, default=(-1, ""))[1] or None
+            label_obj = item.get("label") or item.get("name")
+            label = label_obj.strip() if isinstance(label_obj, str) and label_obj.strip() else None
+            language = None
+            for key in ("language", "lang", "srclang"):
+                language = HianimeProvider._subtitle_language(item.get(key))
+                if language:
+                    break
+            if not language:
+                language = HianimeProvider._subtitle_language(label)
+            out.append(SubtitleTrack(url, language, label, bool(item.get("default"))))
+            seen.add(url)
+        return out
+
+    @staticmethod
+    def _subtitle(tracks: object) -> Optional[str]:
+        chosen = HianimeProvider._default_subtitle(AnimeKaiProvider._subtitle_tracks(tracks))
+        return chosen.url if chosen else None
 
     def _resolve_link(self, anime_id: str, link_id: str) -> StreamBundle:
         encoded = self._encode(link_id)
@@ -1307,12 +1321,17 @@ class AnimeKaiProvider(Provider):
                 pass
         streams.sort(key=stream_rank, reverse=True)
         _, mal_id = self._anime_info(anime_id)
+        subtitle_tracks = self._subtitle_tracks(final.get("tracks"))
+        default_subtitle = HianimeProvider._default_subtitle(subtitle_tracks)
         return StreamBundle(
             streams=streams,
-            subtitle=self._subtitle(final.get("tracks")),
+            subtitle=default_subtitle.url if default_subtitle else None,
             referer=embed_url,
             mal_id=mal_id,
             provider=self.name,
+            subtitle_language=default_subtitle.language if default_subtitle else None,
+            subtitle_label=default_subtitle.label if default_subtitle else None,
+            subtitles=subtitle_tracks,
         )
 
     def resolve(self, anime: Anime | str, episode: Episode, mode: str) -> StreamBundle:
@@ -1533,21 +1552,34 @@ class KuhiProvider(Provider):
         return "auto"
 
     @staticmethod
-    def _subtitle(items: object) -> Optional[str]:
+    def _subtitle_tracks(items: object) -> list[SubtitleTrack]:
         if not isinstance(items, list):
-            return None
-        ranked: list[tuple[int, str]] = []
+            return []
+        out: list[SubtitleTrack] = []
+        seen: set[str] = set()
         for item in items:
             if not isinstance(item, dict):
                 continue
             url = item.get("file") or item.get("url") or item.get("src")
-            if not isinstance(url, str) or not url:
+            if not isinstance(url, str) or not url or url in seen:
                 continue
-            label = str(item.get("label") or item.get("lang") or item.get("language") or "").lower()
-            default = bool(item.get("default"))
-            score = 3 if default else 2 if "english" in label or label in {"en", "eng"} else 1
-            ranked.append((score, url))
-        return max(ranked, default=(-1, ""))[1] or None
+            label_obj = item.get("label") or item.get("name")
+            label = label_obj.strip() if isinstance(label_obj, str) and label_obj.strip() else None
+            language = None
+            for key in ("language", "lang", "srclang"):
+                language = HianimeProvider._subtitle_language(item.get(key))
+                if language:
+                    break
+            if not language:
+                language = HianimeProvider._subtitle_language(label)
+            out.append(SubtitleTrack(url, language, label, bool(item.get("default"))))
+            seen.add(url)
+        return out
+
+    @staticmethod
+    def _subtitle(items: object) -> Optional[str]:
+        chosen = HianimeProvider._default_subtitle(KuhiProvider._subtitle_tracks(items))
+        return chosen.url if chosen else None
 
     def _mal_id(self, anime_id: str) -> Optional[str]:
         if anime_id in self._mal_cache:
@@ -1621,13 +1653,17 @@ class KuhiProvider(Provider):
                 pass
 
         streams.sort(key=stream_rank, reverse=True)
-        subtitle = self._subtitle(payload.get("subtitles") or payload.get("tracks"))
+        subtitle_tracks = self._subtitle_tracks(payload.get("subtitles") or payload.get("tracks"))
+        default_subtitle = HianimeProvider._default_subtitle(subtitle_tracks)
         return StreamBundle(
             streams=streams,
-            subtitle=subtitle,
+            subtitle=default_subtitle.url if default_subtitle else None,
             referer=referer,
             mal_id=self._mal_id(anime_id),
             provider=self.name,
+            subtitle_language=default_subtitle.language if default_subtitle else None,
+            subtitle_label=default_subtitle.label if default_subtitle else None,
+            subtitles=subtitle_tracks,
         )
 
 
