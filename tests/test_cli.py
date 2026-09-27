@@ -13,7 +13,6 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ns.quality, "1080")
         self.assertEqual(ns.episode, "2-4")
         self.assertTrue(ns.skip)
-        self.assertEqual(ns.sub_lang, "de")
         self.assertEqual(ns.query, ["frieren"])
 
         sub_ns = parser.parse_args(["--sub-lang", "de", "frieren"])
@@ -35,6 +34,7 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ns.quality, "720")
         self.assertEqual(ns.player, "mpv")
         self.assertTrue(ns.skip)
+        self.assertEqual(ns.sub_lang, "de")
 
     def test_provider_defaults_include_live_preflight_backup(self):
         # Local divergence from upstream: this checkout keeps the default

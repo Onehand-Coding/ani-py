@@ -709,6 +709,7 @@ class HianimeProvider(Provider):
             provider=self.name,
             subtitle_language=subtitle_language,
             subtitle_label=subtitle_label,
+            subtitles=subtitle_tracks,
         )
 
 
