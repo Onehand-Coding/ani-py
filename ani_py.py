@@ -2991,7 +2991,14 @@ class Playback:
         keep_open: bool = True,
     ) -> int:
         if self.player == "download":
-            return self.download(stream, title=title, subtitle=subtitle, referer=referer)
+            return self.download(
+                stream,
+                title=title,
+                subtitle=subtitle,
+                referer=referer,
+                subtitle_language=subtitle_language,
+                subtitle_label=subtitle_label,
+            )
 
         extra = split_flags(os.getenv("ANI_PY_PLAYER_FLAGS", "")) + self.args.player_flag
         basename = self.player if self._is_android() else Path(self.player).name.lower()
@@ -3104,6 +3111,27 @@ class Playback:
                 subtitle_label=subtitle_label,
             )
 
+    def set_subtitle(self, track: Optional[SubtitleTrack]) -> bool:
+        """Switch subtitle tracks in-place when mpv IPC is available."""
+        if not self._is_mpv() or not self.active():
+            return False
+        try:
+            if track is None:
+                self._ipc(["set_property", "sid", "no"])
+                return True
+            # Keep previously loaded tracks available for quick switching, but
+            # select the requested external subtitle immediately.
+            self._ipc([
+                "sub-add",
+                track.url,
+                "select",
+                track.label or "",
+                track.language or "",
+            ])
+            return True
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            return False
+
     def replay(self) -> bool:
         if not self._is_mpv() or not self.active():
             return False
@@ -3114,17 +3142,29 @@ class Playback:
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
             return False
 
-    def download(self, stream: Stream, *, title: str, subtitle: Optional[str], referer: str) -> int:
+    def download(
+        self,
+        stream: Stream,
+        *,
+        title: str,
+        subtitle: Optional[str],
+        referer: str,
+        subtitle_language: Optional[str] = None,
+        subtitle_label: Optional[str] = None,
+    ) -> int:
         outdir = Path(os.getenv("ANI_PY_DOWNLOAD_DIR", ".")).expanduser()
         outdir.mkdir(parents=True, exist_ok=True)
         safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).strip() or "episode"
 
         if subtitle:
             curl = HttpClient().exe
+            raw_tag = subtitle_language or subtitle_label or "sub"
+            tag = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_tag).strip("-._") or "sub"
+            suffix = _subtitle_suffix_for(subtitle)
             sub_cmd = [
                 curl, "--fail", "-sS", "-L", "--max-time", "30",
                 "-A", USER_AGENT, "-e", referer, subtitle,
-                "-o", str(outdir / f"{safe}.vtt"),
+                "-o", str(outdir / f"{safe}.{tag}{suffix}"),
             ]
             sub_proc = subprocess.run(sub_cmd)
             if sub_proc.returncode != 0:
@@ -3183,6 +3223,66 @@ def choose_quality(streams: Sequence[Stream], requested: str) -> Stream:
                 return stream
         warn(f"Quality {requested} not found; using best.")
     return max(streams, key=stream_rank)
+
+
+def choose_subtitle_track(bundle: StreamBundle, preference: Optional[str]) -> Optional[SubtitleTrack]:
+    tracks = bundle.subtitle_tracks()
+    if not tracks:
+        return None
+
+    pref = (preference or "auto").strip()
+    folded = pref.casefold()
+    if folded in {"off", "none", "no", "false", "0"}:
+        return None
+
+    if folded.startswith("label:"):
+        wanted = folded.split(":", 1)[1].strip()
+        exact = next((track for track in tracks if (track.label or "").casefold() == wanted), None)
+        if exact:
+            return exact
+
+    if folded not in {"", "auto", "default"}:
+        language = HianimeProvider._subtitle_language(pref)
+        if language:
+            exact_language = next((track for track in tracks if track.language == language), None)
+            if exact_language:
+                return exact_language
+        exact_label = next((track for track in tracks if (track.label or "").casefold() == folded), None)
+        if exact_label:
+            return exact_label
+        partial_label = next((track for track in tracks if folded in (track.label or "").casefold()), None)
+        if partial_label:
+            return partial_label
+
+    default = next((track for track in tracks if track.default), None)
+    if default:
+        return default
+    if bundle.subtitle:
+        legacy = next((track for track in tracks if track.url == bundle.subtitle), None)
+        if legacy:
+            return legacy
+    return next((track for track in tracks if track.language == "en"), None) or tracks[0]
+
+
+def subtitle_menu_rows(
+    tracks: Sequence[SubtitleTrack], current: Optional[SubtitleTrack]
+) -> tuple[list[str], dict[str, Optional[SubtitleTrack]]]:
+    rows = ["Off"]
+    mapping: dict[str, Optional[SubtitleTrack]] = {"Off": None}
+    for track in tracks:
+        parts = [track.name]
+        if track.language and track.language.casefold() not in track.name.casefold():
+            parts.append(f"[{track.language}]")
+        if track.default:
+            parts.append("(default)")
+        if current is not None and track.url == current.url:
+            parts.append("• current")
+        row = " ".join(parts)
+        if row in mapping:
+            row = f"{row}  {len(mapping)}"
+        rows.append(row)
+        mapping[row] = track
+    return rows, mapping
 
 
 def episode_index(episodes: Sequence[Episode], number: str) -> Optional[int]:
@@ -3261,6 +3361,8 @@ class App:
         self.fallback_map: dict[tuple[str, str], Anime] = {}
         self.last_stream: Optional[Stream] = None
         self.last_provider: Optional[str] = None
+        self.last_subtitle: Optional[SubtitleTrack] = None
+        self.subtitle_preference = getattr(args, "sub_lang", None) or "auto"
 
     def _search_anime(self, query: str) -> Anime:
         status(f"Searching for {sty(query, C.BOLD)}")
@@ -3559,8 +3661,10 @@ class App:
     ) -> int:
         bundle = self._bundle(anime, episode)
         stream = choose_quality(bundle.streams, quality)
+        subtitle_track = choose_subtitle_track(bundle, self.subtitle_preference)
         self.last_stream = stream
         self.last_provider = bundle.provider
+        self.last_subtitle = subtitle_track
         clear_screen()
         banner(f"{anime.title}  •  Episode {episode.number}  •  {stream.quality}")
         print()
@@ -3570,18 +3674,21 @@ class App:
         print(f"  {sty('Quality', C.DIM)}  {stream.quality}")
         print(f"  {sty('Source', C.DIM)}   {self.providers.get(bundle.provider).display_name}")
         print(f"  {sty('Player', C.DIM)}   {Path(self.playback.player).name if self.playback.player != 'download' else 'download'}")
-        print(f"  {sty('Subtitle', C.DIM)} {'yes' if bundle.subtitle else 'none'}")
+        subtitle_name = subtitle_track.name if subtitle_track else "off"
+        if subtitle_track and subtitle_track.language:
+            subtitle_name += f" [{subtitle_track.language}]"
+        print(f"  {sty('Subtitle', C.DIM)} {subtitle_name}")
         print()
         assert self.playback is not None
         play_fn = self.playback.replace if replace else self.playback.play
         play_kwargs = dict(
             title=f"{anime.title} Episode {episode.number}",
-            subtitle=bundle.subtitle,
+            subtitle=subtitle_track.url if subtitle_track else None,
             referer=bundle.referer,
             mal_id=bundle.mal_id,
             episode=episode.number,
-            subtitle_language=bundle.subtitle_language,
-            subtitle_label=bundle.subtitle_label,
+            subtitle_language=subtitle_track.language if subtitle_track else None,
+            subtitle_label=subtitle_track.label if subtitle_track else None,
         )
         if replace:
             rc = play_fn(stream, **play_kwargs)
@@ -3603,6 +3710,7 @@ class App:
                 "Choose episode",
                 "Search another anime",
                 "Change quality",
+                "Change subtitle",
                 "Detach & exit",
                 "Stop & quit",
             ]
@@ -3681,6 +3789,44 @@ class App:
                 )
                 if chosen:
                     quality = chosen[0]
+                    self._play_episode(anime, current, quality, replace=True)
+            elif action == "Change subtitle":
+                bundle = self._bundle(anime, current)
+                tracks = bundle.subtitle_tracks()
+                if not tracks:
+                    warn("This source does not expose switchable subtitle tracks.")
+                    continue
+                current_subtitle = choose_subtitle_track(bundle, self.subtitle_preference)
+                rows, mapping = subtitle_menu_rows(tracks, current_subtitle)
+                chosen = self.menu.choose(
+                    rows,
+                    "Subtitle › ",
+                    compact=len(rows) <= 12,
+                    header=f"{anime.title} • Episode {current.number} • {self.providers.get(bundle.provider).display_name}",
+                )
+                if not chosen:
+                    continue
+                selected = mapping.get(chosen[0])
+                if chosen[0] not in mapping:
+                    needle = _strip_ansi(chosen[0])
+                    selected = next(
+                        (track for row, track in mapping.items() if _strip_ansi(row) == needle),
+                        None,
+                    )
+                if selected is None and _strip_ansi(chosen[0]) != "Off":
+                    warn("Subtitle selection did not match any track.")
+                    continue
+                self.subtitle_preference = (
+                    "off"
+                    if selected is None
+                    else f"label:{selected.label}"
+                    if selected.label
+                    else selected.language or "auto"
+                )
+                self.last_subtitle = selected
+                if self.playback.set_subtitle(selected):
+                    ok(f"Subtitle: {selected.name if selected else 'off'}")
+                else:
                     self._play_episode(anime, current, quality, replace=True)
 
     def run(self) -> int:
@@ -3769,6 +3915,7 @@ def build_parser() -> argparse.ArgumentParser:
               ANI_PY_MENU            fzf, rofi, dmenu, or fallback terminal UI
               ANI_PY_MENU_FLAGS      extra menu flags
               ANI_PY_DOWNLOAD_DIR    download destination
+              ANI_PY_SUB_LANG        preferred subtitle language/label, auto, or off
               ANI_PY_HIST_DIR        state directory root
               ANI_PY_CURL            curl/curl-impersonate executable
               ANI_PY_PROVIDER        auto, hianime, anilight, kuhi, or animekai
@@ -3787,6 +3934,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-D", "--delete-history", dest="clear_history", action="store_true", help="clear watch history")
     parser.add_argument("-e", "--episode", "-r", "--range", dest="episode", help="episode or range, e.g. 4 or 4-9")
     parser.add_argument("-q", "--quality", default=os.getenv("ANI_PY_QUALITY", "best"), help="best, worst, 360, 480, 720, 1080")
+    parser.add_argument("--sub-lang", default=os.getenv("ANI_PY_SUB_LANG", "auto"), help="subtitle language/label for playback/downloads, or auto/off")
     parser.add_argument("-S", "--select-nth", type=int, help="select search result by index")
     parser.add_argument(
         "--provider",
