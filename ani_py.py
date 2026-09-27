@@ -208,6 +208,20 @@ class HistoryEntry:
         return self.provider_id
 
 
+@dataclasses.dataclass
+class DetachedSession:
+    socket: str
+    player: str
+    provider: str
+    provider_id: str
+    title: str
+    episode: str
+    quality: str
+    mode: str
+    source_provider: str
+    subtitle_preference: str = "auto"
+
+
 @dataclasses.dataclass(frozen=True)
 class ProviderCapabilities:
     sub: bool = True
@@ -1765,6 +1779,65 @@ class HistoryStore:
         self.path.write_text("", encoding="utf-8")
 
 
+class DetachedSessionStore:
+    def __init__(self) -> None:
+        root = Path(os.getenv("ANI_PY_HIST_DIR") or os.getenv("XDG_STATE_HOME") or (Path.home() / ".local/state"))
+        self.dir = root / APP_NAME
+        self.path = self.dir / "detached-session.json"
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def load(self) -> Optional[DetachedSession]:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        required = {
+            "socket", "player", "provider", "provider_id", "title",
+            "episode", "quality", "mode", "source_provider",
+        }
+        if not required.issubset(raw):
+            return None
+        try:
+            return DetachedSession(
+                socket=str(raw["socket"]),
+                player=str(raw["player"]),
+                provider=str(raw["provider"]),
+                provider_id=str(raw["provider_id"]),
+                title=str(raw["title"]),
+                episode=str(raw["episode"]),
+                quality=str(raw["quality"]),
+                mode=str(raw["mode"]),
+                source_provider=str(raw["source_provider"]),
+                subtitle_preference=str(raw.get("subtitle_preference") or "auto"),
+            )
+        except (TypeError, ValueError):
+            return None
+
+    def save(self, session: DetachedSession) -> None:
+        payload = json.dumps(dataclasses.asdict(session), ensure_ascii=False, indent=2) + "\n"
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=self.dir, delete=False
+        ) as handle:
+            handle.write(payload)
+            temp_name = handle.name
+        temp_path = Path(temp_name)
+        try:
+            temp_path.chmod(0o600)
+        except OSError:
+            pass
+        temp_path.replace(self.path)
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
 # ---------- menu ----------
 
 class Menu:
@@ -2863,6 +2936,31 @@ class Playback:
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
             return False
 
+    def adopt_detached_session(self, session: DetachedSession) -> bool:
+        """Adopt an existing ani-py mpv IPC socket without restarting playback."""
+        if is_android_environment():
+            return False
+        self.player = session.player
+        self.proc = None
+        self.ipc_path = Path(session.socket).expanduser()
+        self._detached = False
+        if not self._is_mpv() or not self.active():
+            self.ipc_path = None
+            return False
+        return True
+
+    def current_path(self) -> Optional[str]:
+        if not self._is_mpv() or self.ipc_path is None:
+            return None
+        try:
+            value = self._ipc(["get_property", "path"], timeout=0.5)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, str) and value else None
+
+    def reattachable(self) -> bool:
+        return not self._is_android() and self._is_mpv() and self.ipc_path is not None and self.active()
+
     def _kill_process_group(self) -> None:
         proc = self.proc
         if proc is None or proc.poll() is not None:
@@ -3354,6 +3452,7 @@ class App:
             order,
         )
         self.history = HistoryStore()
+        self.session_store = DetachedSessionStore()
         self.menu = Menu(args.menu, args.menu_flags)
         self.playback = None if args.list_providers else Playback(args)
         self.bundle_cache: dict[tuple[str, str, str, str], StreamBundle] = {}
@@ -3602,6 +3701,113 @@ class App:
             return None
         return chosen, episodes, episode
 
+    def _clear_detached_session(self) -> None:
+        store = getattr(self, "session_store", None)
+        if store is not None:
+            store.clear()
+
+    def _save_detached_session(
+        self,
+        anime: Anime,
+        current: Episode,
+        quality: str,
+    ) -> bool:
+        playback = self.playback
+        store = getattr(self, "session_store", None)
+        if (
+            playback is None
+            or store is None
+            or playback._is_android()
+            or not playback._is_mpv()
+            or playback.ipc_path is None
+            or not playback.active()
+        ):
+            return False
+        session = DetachedSession(
+            socket=str(playback.ipc_path),
+            player=playback.player,
+            provider=anime.provider,
+            provider_id=anime.provider_id,
+            title=anime.title,
+            episode=current.number,
+            quality=self.last_stream.quality if self.last_stream else quality,
+            mode=self.args.mode,
+            source_provider=self.last_provider or anime.provider,
+            subtitle_preference=self.subtitle_preference,
+        )
+        store.save(session)
+        return True
+
+    def _resume_detached_session(self, session: DetachedSession) -> int:
+        assert self.playback is not None
+        if not self.playback.adopt_detached_session(session):
+            self._clear_detached_session()
+            warn("The saved detached mpv session is no longer running.")
+            return 1
+
+        self.args.mode = session.mode
+        self.subtitle_preference = session.subtitle_preference or "auto"
+        anime = Anime(session.provider_id, session.title, session.provider)
+        try:
+            anime, episodes = self._episodes_with_fallback(anime)
+        except ProviderError as exc:
+            warn(f"Could not refresh episode metadata while reattaching: {exc}")
+            episodes = [Episode(session.episode, session.episode)]
+
+        idx = episode_index(episodes, session.episode)
+        if idx is None:
+            current = Episode(session.episode, session.episode)
+            episodes = [current]
+        else:
+            current = episodes[idx]
+
+        current_path = self.playback.current_path() or ""
+        self.last_stream = Stream(session.quality or "auto", current_path)
+        self.last_provider = session.source_provider or anime.provider
+        self.last_subtitle = None
+        ok(f"Reattached to {anime.title} Episode {current.number}.")
+        self._interactive_loop(anime, episodes, current, session.quality or "best")
+        return 0
+
+    def _maybe_resume_detached_session(self, *, force: bool = False) -> Optional[int]:
+        store = getattr(self, "session_store", None)
+        if store is None or self.playback is None:
+            return 1 if force else None
+        session = store.load()
+        if session is None:
+            if force:
+                warn("No detached ani-py mpv session was found.")
+                return 1
+            return None
+
+        if not self.playback.adopt_detached_session(session):
+            store.clear()
+            if force:
+                warn("The saved detached mpv session is no longer running.")
+                return 1
+            return None
+
+        if force:
+            return self._resume_detached_session(session)
+
+        choice = self.menu.choose(
+            ["Reattach controls", "Stop playback and search", "Exit"],
+            "Detached › ",
+            compact=True,
+            header=f"Detached playback found: {session.title} • Episode {session.episode}",
+        )
+        if not choice or choice[0] == "Exit":
+            self.playback.detach()
+            return 0
+        if choice[0] == "Reattach controls":
+            return self._resume_detached_session(session)
+        if choice[0] == "Stop playback and search":
+            self.playback.stop()
+            store.clear()
+            return None
+        self.playback.detach()
+        return 0
+
     def _resolve_on(self, anime: Anime, number: str) -> StreamBundle:
         episodes = self._episodes(anime)
         idx = episode_index(episodes, number)
@@ -3734,11 +3940,16 @@ class App:
             if idx is None:
                 return
             if action == "Stop & quit":
+                self._clear_detached_session()
                 self.playback.stop()
                 return
             if action == "Detach & exit":
+                saved = self._save_detached_session(anime, current, quality)
                 self.playback.detach()
-                ok("Detached; playback continues in the background.")
+                if saved:
+                    ok("Detached; run ani-py --attach to return to these controls.")
+                else:
+                    ok("Detached; playback continues in the background.")
                 return
             if action == "Next episode":
                 if idx + 1 >= len(episodes):
@@ -3852,6 +4063,19 @@ class App:
                 print(f"{p.name:10} {p.display_name:12} {', '.join(caps)}{tag}")
             return 0
 
+        if getattr(self.args, "attach", False):
+            result = self._maybe_resume_detached_session(force=True)
+            return 1 if result is None else result
+
+        if (
+            not self.args.continue_watching
+            and not self.args.download
+            and not self.args.query
+        ):
+            result = self._maybe_resume_detached_session(force=False)
+            if result is not None:
+                return result
+
         if self.args.continue_watching:
             anime, continue_after = self._from_history()
         else:
@@ -3907,6 +4131,7 @@ def build_parser() -> argparse.ArgumentParser:
               ani-py --dub -e 1-4 "one piece"
               ani-py -c
               ani-py -d -e 1-12 "pluto"
+              ani-py --attach
 
             environment:
               ANI_PY_PLAYER          preferred player (mpv, vlc, iina, auto, or executable)
@@ -3930,6 +4155,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("query", nargs="*", help="anime search query")
     parser.add_argument("-c", "--continue", dest="continue_watching", action="store_true", help="continue from history")
+    parser.add_argument("--attach", action="store_true", help="reattach controls to the last detached desktop mpv session")
     parser.add_argument("-d", "--download", action="store_true", help="download instead of play")
     parser.add_argument("-D", "--delete-history", dest="clear_history", action="store_true", help="clear watch history")
     parser.add_argument("-e", "--episode", "-r", "--range", dest="episode", help="episode or range, e.g. 4 or 4-9")
