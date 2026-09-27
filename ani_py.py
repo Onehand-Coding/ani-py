@@ -254,6 +254,20 @@ def which_first(candidates: Iterable[str]) -> Optional[str]:
     return None
 
 
+def default_vlc_paths() -> list[str]:
+    # VLC's Windows installer never adds itself to PATH, so a PATH-only probe
+    # reports "not found" on a machine where VLC is installed. Probe the
+    # default locations instead, the same way macOS probes IINA's bundle.
+    return [
+        str(Path(base) / "VideoLAN" / "VLC" / "vlc.exe")
+        for base in (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+        )
+        if base
+    ]
+
+
 def split_flags(value: str) -> list[str]:
     return shlex.split(value) if value.strip() else []
 
@@ -2330,7 +2344,15 @@ class Playback:
             return f"android_{requested}"
 
         if requested_player and requested_player.lower() != "auto":
-            resolved = which_first([requested_player])
+            # On Windows an explicit `vlc` also has to try the install
+            # directory, otherwise --player vlc fails despite VLC existing.
+            fallback = (
+                default_vlc_paths()
+                if requested_player.lower() == "vlc"
+                and platform.system() == "Windows"
+                else []
+            )
+            resolved = which_first([requested_player, *fallback])
             if not resolved:
                 fail(f"Requested player '{requested_player}' was not found.")
             return resolved
@@ -2339,7 +2361,7 @@ class Playback:
         if system == "Darwin":
             resolved = which_first(["iina", "/Applications/IINA.app/Contents/MacOS/iina-cli", "mpv", "vlc"])
         elif system == "Windows":
-            resolved = which_first(["mpv.exe", "vlc.exe"])
+            resolved = which_first(["mpv.exe", "vlc.exe", *default_vlc_paths()])
         else:
             resolved = which_first(["mpv", "vlc"])
         if not resolved:

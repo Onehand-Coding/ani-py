@@ -1,0 +1,24 @@
+[project]
+name = "ani-py"
+version = "0.5.2rc10"
+description = "Terminal anime search, streaming, and download CLI (standard library only)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+# Intentionally empty and permanently so: ani-py runs on the standard library
+# only. Networking, menus, playback, and downloads are delegated to external
+# binaries (curl, fzf, mpv, VLC, yt-dlp, ffmpeg, ani-skip). Do not add
+# dependencies here; add a subprocess call instead.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Onehand-Coding/ani-py"
+Repository = "https://github.com/Onehand-Coding/ani-py"
+Changelog = "https://github.com/Onehand-Coding/ani-py/blob/main/CHANGELOG.md"
+
+[tool.uv]
+# ani-py is a script project, not a distribution: the shippable artifacts are
+# the `ani-py` launcher and dist/ani-py, not an installable wheel. Without this,
+# uv would try to build and install the project into the environment.
+package = false
