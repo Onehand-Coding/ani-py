@@ -154,6 +154,22 @@ class Stream:
     url: str
 
 
+@dataclasses.dataclass(frozen=True)
+class SubtitleTrack:
+    url: str
+    language: Optional[str] = None
+    label: Optional[str] = None
+    default: bool = False
+
+    @property
+    def name(self) -> str:
+        if self.label:
+            return self.label
+        if self.language:
+            return self.language
+        return "Subtitle"
+
+
 @dataclasses.dataclass
 class StreamBundle:
     streams: list[Stream]
@@ -163,6 +179,21 @@ class StreamBundle:
     provider: str = "unknown"
     subtitle_language: Optional[str] = None
     subtitle_label: Optional[str] = None
+    subtitles: list[SubtitleTrack] = dataclasses.field(default_factory=list)
+
+    def subtitle_tracks(self) -> list[SubtitleTrack]:
+        tracks = list(self.subtitles)
+        if self.subtitle and not any(track.url == self.subtitle for track in tracks):
+            tracks.insert(
+                0,
+                SubtitleTrack(
+                    url=self.subtitle,
+                    language=self.subtitle_language,
+                    label=self.subtitle_label,
+                    default=True,
+                ),
+            )
+        return tracks
 
 
 @dataclasses.dataclass
@@ -518,36 +549,61 @@ class HianimeProvider(Provider):
         return None
 
     @staticmethod
+    def _subtitle_tracks(payload: object) -> list[SubtitleTrack]:
+        tracks: list[SubtitleTrack] = []
+        seen: set[str] = set()
+
+        def visit(value: object) -> None:
+            if isinstance(value, dict):
+                subtitles = value.get("subtitles")
+                if isinstance(subtitles, list):
+                    for item in subtitles:
+                        if not isinstance(item, dict):
+                            continue
+                        src = item.get("src") or item.get("file") or item.get("url")
+                        if not isinstance(src, str) or not src or src in seen:
+                            continue
+                        label_obj = item.get("label") or item.get("name")
+                        label = label_obj.strip() if isinstance(label_obj, str) and label_obj.strip() else None
+                        language = None
+                        for key in ("language", "lang", "srclang"):
+                            language = HianimeProvider._subtitle_language(item.get(key))
+                            if language:
+                                break
+                        if not language:
+                            language = HianimeProvider._subtitle_language(label)
+                        tracks.append(
+                            SubtitleTrack(
+                                url=src,
+                                language=language,
+                                label=label,
+                                default=bool(item.get("default")),
+                            )
+                        )
+                        seen.add(src)
+                for nested in value.values():
+                    visit(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    visit(nested)
+
+        visit(payload)
+        return tracks
+
+    @staticmethod
+    def _default_subtitle(tracks: Sequence[SubtitleTrack]) -> Optional[SubtitleTrack]:
+        if not tracks:
+            return None
+        return next((track for track in tracks if track.default), None) or next(
+            (track for track in tracks if track.language == "en"), None
+        ) or tracks[0]
+
+    @staticmethod
     def _pick_subtitle_info(payload: object) -> tuple[Optional[str], Optional[str], Optional[str]]:
-        if isinstance(payload, dict):
-            subtitles = payload.get("subtitles")
-            if isinstance(subtitles, list):
-                items = [x for x in subtitles if isinstance(x, dict)]
-                preferred = [x for x in items if x.get("default")]
-                for item in preferred + [x for x in items if x not in preferred]:
-                    src = item.get("src") or item.get("file") or item.get("url")
-                    if not isinstance(src, str) or not src:
-                        continue
-                    label_obj = item.get("label") or item.get("name")
-                    label = label_obj.strip() if isinstance(label_obj, str) and label_obj.strip() else None
-                    language = None
-                    for key in ("language", "lang", "srclang"):
-                        language = HianimeProvider._subtitle_language(item.get(key))
-                        if language:
-                            break
-                    if not language:
-                        language = HianimeProvider._subtitle_language(label)
-                    return src, language, label
-            for value in payload.values():
-                hit = HianimeProvider._pick_subtitle_info(value)
-                if hit[0]:
-                    return hit
-        elif isinstance(payload, list):
-            for value in payload:
-                hit = HianimeProvider._pick_subtitle_info(value)
-                if hit[0]:
-                    return hit
-        return None, None, None
+        chosen = HianimeProvider._default_subtitle(HianimeProvider._subtitle_tracks(payload))
+        if chosen is None:
+            return None, None, None
+        return chosen.url, chosen.language, chosen.label
 
     @staticmethod
     def _pick_subtitle(payload: object) -> Optional[str]:
@@ -619,7 +675,11 @@ class HianimeProvider(Provider):
         master_url = self._pick_source_url(payload)
         if not master_url:
             raise StreamNotFound("HiAnime payload contained no HLS source.")
-        subtitle, subtitle_language, subtitle_label = self._pick_subtitle_info(payload)
+        subtitle_tracks = self._subtitle_tracks(payload)
+        default_subtitle = self._default_subtitle(subtitle_tracks)
+        subtitle = default_subtitle.url if default_subtitle else None
+        subtitle_language = default_subtitle.language if default_subtitle else None
+        subtitle_label = default_subtitle.label if default_subtitle else None
         try:
             master = self.http.get(master_url, referer=referer)
         except HttpError as exc:
