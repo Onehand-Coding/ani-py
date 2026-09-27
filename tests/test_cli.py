@@ -13,7 +13,13 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ns.quality, "1080")
         self.assertEqual(ns.episode, "2-4")
         self.assertTrue(ns.skip)
+        self.assertEqual(ns.sub_lang, "de")
         self.assertEqual(ns.query, ["frieren"])
+
+        sub_ns = parser.parse_args(["--sub-lang", "de", "frieren"])
+        self.assertEqual(sub_ns.sub_lang, "de")
+        attach_ns = parser.parse_args(["--attach"])
+        self.assertTrue(attach_ns.attach)
 
     def test_environment_defaults(self):
         with patch.dict(os.environ, {
@@ -21,6 +27,7 @@ class TestCLI(unittest.TestCase):
             "ANI_PY_QUALITY": "720",
             "ANI_PY_PLAYER": "mpv",
             "ANI_PY_SKIP_INTRO": "1",
+            "ANI_PY_SUB_LANG": "de",
         }, clear=False):
             parser = ani_py.build_parser()
             ns = parser.parse_args(["frieren"])

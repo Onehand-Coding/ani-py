@@ -51,6 +51,14 @@ class TestProviderInternals(unittest.TestCase):
         })
         self.assertEqual(info, ("https://sub-es.vtt", "es", "Spanish"))
 
+        tracks = ani_py.HianimeProvider._subtitle_tracks({
+            "subtitles": [
+                {"src": "https://sub-en.vtt", "default": True, "label": "English", "lang": "eng"},
+                {"src": "https://sub-de.vtt", "label": "German", "lang": "deu"},
+            ]
+        })
+        self.assertEqual([(t.language, t.label) for t in tracks], [("en", "English"), ("de", "German")])
+
     def test_parse_master_playlist(self):
         master = '''#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
@@ -79,12 +87,19 @@ high/index.m3u8
         encoded = base64.b64encode(embed_url.encode()).decode()
         payload = {
             "src": "https://cdn.example/master.m3u8",
-            "subtitles": [{
-                "src": "https://cdn.example/en.vtt",
-                "default": True,
-                "label": "English",
-                "language": "eng",
-            }],
+            "subtitles": [
+                {
+                    "src": "https://cdn.example/en.vtt",
+                    "default": True,
+                    "label": "English",
+                    "language": "eng",
+                },
+                {
+                    "src": "https://cdn.example/de.vtt",
+                    "label": "German",
+                    "language": "deu",
+                },
+            ],
         }
         raw = json.dumps(payload).encode()
         blob = base64.b64encode(
@@ -104,6 +119,10 @@ high/index.m3u8
         self.assertEqual(bundle.subtitle, "https://cdn.example/en.vtt")
         self.assertEqual(bundle.subtitle_language, "en")
         self.assertEqual(bundle.subtitle_label, "English")
+        self.assertEqual(
+            [(track.language, track.label) for track in bundle.subtitles],
+            [("en", "English"), ("de", "German")],
+        )
         self.assertEqual(bundle.streams[0].quality, "720p")
         self.assertEqual(bundle.streams[0].url, "https://cdn.example/720/index.m3u8")
 
