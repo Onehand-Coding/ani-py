@@ -73,7 +73,7 @@ ani-py/
 ├── dist/                   # built standalone artifact
 ├── .github/workflows/      # CI
 ├── CHANGELOG.md
-└── CONTEXT.md              # this file (local only, not upstream)
+└── CONTEXT.md              # maintainer-oriented project memory (see docs/development.md)
 ```
 
 ---
