@@ -47,6 +47,30 @@ The default Linux/Unix target is `~/.local/bin/ani-py`. Use `--prefix DIR` to ch
 
 Core requirements are Python 3.10+ and curl. `fzf` and mpv are recommended; VLC, rofi/dmenu, yt-dlp, ffmpeg, and ani-skip are optional.
 
+### Windows
+
+From a checkout, `install.bat` installs the standalone script plus a `.bat` launcher. It needs `ani-py.bat` next to it, so either run it from a clone or download both files into the same folder:
+
+```bat
+install.bat
+install.bat --deps
+install.bat --prefix "%LOCALAPPDATA%\ani-py"
+```
+
+The default Windows target is `%USERPROFILE%\.local\bin\ani-py`, matching the Unix `~/.local/bin` default. `--no-path` skips the per-user PATH update if you manage PATH yourself.
+
+`--deps` installs uv (if missing) plus a uv-managed Python, and then the recommended tools through winget: `fzf` for the interactive menus, `VLC`, `mpv`, and `yt-dlp`. Anything already on `PATH` is skipped, so re-running it will not install a second copy of a tool you already have. The interpreter step is skipped when `uv python find 3.12` already resolves one, which also avoids a clash with an unmanaged `python3.12.exe` shim.
+
+The installed launcher resolves its interpreter in this order:
+
+1. `uv run python` — honours `pyproject.toml` and `uv.lock` in a checkout
+2. `python`
+3. `py -3`
+
+So on a machine with uv, no system Python is required. There is no `curl | sh` equivalent for Windows; `curl.exe` ships with Windows 10+ (1803 and later) and the installer uses it when present, falling back to PowerShell.
+
+**Players.** `auto` prefers `mpv` and falls back to VLC. VLC's Windows installer never adds itself to `PATH`, so ani-py probes `%ProgramFiles%\VideoLAN\VLC\vlc.exe` (and the x86 equivalent) directly — `--player vlc` works on a stock install with no `PATH` change.
+
 ### Termux / Android
 
 The same installer detects Termux and installs to `$PREFIX/bin/ani-py`:
@@ -66,6 +90,19 @@ chmod +x ani-py
 ./ani-py "frieren"
 ```
 
+With [uv](https://docs.astral.sh/uv/) installed, the same checkout runs inside a
+managed environment:
+
+```sh
+git clone https://github.com/Onehand-Coding/ani-py.git
+cd ani-py
+uv sync
+uv run python ani-py "frieren"
+```
+
+`uv sync` is a formality here: ani-py has **no runtime dependencies**, so the
+environment only exists to pin an interpreter. See [Development](#development).
+
 Build the single-file distribution:
 
 ```sh
@@ -80,6 +117,13 @@ curl -fsSL https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/uninstal
 ```
 
 The uninstaller removes ani-py only; it does not remove system packages or Android players.
+
+On Windows, remove the two installed files by hand:
+
+```bat
+del "%USERPROFILE%\.local\bin\ani-py"
+del "%USERPROFILE%\.local\bin\ani-py.bat"
+```
 
 ## Usage
 
@@ -240,9 +284,31 @@ Use `--player-flag='--flag'` and `--menu-flags='--flag'` when a passthrough valu
 
 ## Development
 
+The project is managed with [uv](https://docs.astral.sh/uv/). `pyproject.toml`
+declares metadata and the supported Python range (`>=3.10`), and deliberately
+lists **no dependencies** — the runtime is standard library only. ani-py is
+marked `package = false` because the shippable artifacts are the `ani-py`
+launcher and `dist/ani-py`, not an installable wheel.
+
+```sh
+uv sync                                  # create .venv (nothing to install)
+uv run python -m unittest discover -s tests
+uv run python ani-py --version
+```
+
+On Linux/macOS the Makefile wraps the same steps and also builds the
+standalone artifact:
+
 ```sh
 make test
 make build
+```
+
+`make test` is a bash script and needs a POSIX shell. On Windows use the batch
+counterpart, which runs the identical four stages through `cmd`:
+
+```bat
+scripts\run-tests.bat
 ```
 
 CI checks Python 3.10, 3.11, 3.12, and 3.13. Automated tests mock external players/downloads and use local HTTP fixtures; real-device/provider acceptance is tracked separately.

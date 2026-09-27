@@ -2,8 +2,36 @@
 
 ## Unreleased (0.5.2-rc10)
 
+- Added `ani-py.bat` and `install.bat`, the Windows counterparts of the `ani-py`
+  launcher and `install.sh`. The launcher resolves its interpreter as
+  `uv run python` → `python` → `py -3`, so a checkout is driven by
+  `pyproject.toml`/`uv.lock` and a uv-equipped machine needs no system Python;
+  outside a project `uv run` is a pass-through that creates nothing. The
+  installer defaults to `%USERPROFILE%\.local\bin` to mirror `~/.local/bin`,
+  supports `--deps` (uv plus a uv-managed Python 3.12, then fzf, VLC, mpv and
+  yt-dlp through winget, skipping anything already on `PATH`; the interpreter step
+  probes `uv python find 3.12` first and no-ops when one already resolves, which
+  avoids uv's `--force` clash with an unmanaged `python3.12.exe` shim), `--prefix
+  DIR`, and
+  `--no-path`, and ships the checked-in launcher verbatim so the two copies
+  cannot drift.
+- Fixed VLC being unreachable on Windows. VLC's installer never adds itself to
+  `PATH`, so the player probe failed with "No media player found" in the auto
+  chain and "Requested player 'vlc' was not found" for an explicit
+  `--player vlc`. Detection now probes `%ProgramFiles%\VideoLAN\VLC\vlc.exe` and
+  its `%ProgramFiles(x86)%` counterpart in both branches, mirroring the existing
+  macOS IINA probe.
+- Added `scripts/run-tests.bat`, a Windows counterpart to `scripts/run-tests.sh`.
+  It runs the identical four stages (compile, unit tests, help/version smoke,
+  standalone build) through `uv run` and `cmd`, so the release gate no longer
+  requires bash or `make` on Windows. Batch files are pinned to CRLF via a new
+  `.gitattributes`.
+- Added a `uv`-managed development environment: `pyproject.toml` declares
+  metadata and `requires-python >=3.10` with an intentionally empty dependency
+  list, and a committed `uv.lock` resolves the project. ani-py is marked
+  `package = false` because the shippable artifacts are the `ani-py` launcher
+  and `dist/ani-py`, not an installable wheel. Runtime dependencies remain zero.
 - Updated `--skip` integration for current `ani-skip` by passing provider-supplied MAL ids through the direct `-i/--id` interface instead of the legacy numeric `-q/--query` compatibility path.
-
 - Added an experimental direct AniLight provider using its current JSON API:
   AniList/slug identity, AniLight numeric source ids, sub/dub episode mapping,
   MAL ids where exposed, and the portable `ryu`/AnimeGG progressive source

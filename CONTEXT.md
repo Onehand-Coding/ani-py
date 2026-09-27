@@ -41,17 +41,19 @@ networking, menus, playback, and downloads to best-of-breed external tools.
 | Python dependencies | None - stdlib only, permanently |
 | HTTP | `curl` / curl-impersonate via `HttpClient` wrapper |
 | Menu frontends | `fzf` (default), `rofi`, `dmenu`, built-in numbered fallback |
-| Players | `mpv` (primary), `vlc`, `iina`, custom via `--player` |
+| Players | `mpv` (primary), `vlc`, `iina`, custom via `--player`; Windows `vlc` probed under `%ProgramFiles%` because its installer never sets `PATH` |
 | Downloads | `yt-dlp`, with `ffmpeg` fallback |
 | Intro skipping | `ani-skip` 1.x (mpv only) |
 
 ### Tooling
 | Component | Choice |
 |---|---|
+| Dev environment | `uv` (uv 0.12.3 verified locally); `pyproject.toml` + `uv.lock` |
+| Windows gate | `scripts/run-tests.bat` (`cmd`, CRLF, drives uv) - local only, never in CI |
 | Testing | stdlib `unittest` only (no pytest) |
-| Build | `scripts/build-standalone.sh` → `dist/ani-py` |
+| Build | `scripts/build-standalone.sh` -> `dist/ani-py` |
 | Tool check | `scripts/check-tools.sh` (incl. ani-skip `-i` support) |
-| CI | GitHub Actions: compile + unittest + standalone build |
+| CI | GitHub Actions on `ubuntu-latest` only: compile + unittest + standalone build |
 
 ### Infrastructure
 | Component | Choice |
@@ -65,13 +67,22 @@ networking, menus, playback, and downloads to best-of-breed external tools.
 
 ```text
 ani-py/
-├── ani-py                  # executable wrapper (thin launcher)
+├── ani-py                  # POSIX executable wrapper (thin launcher)
+├── ani-py.bat              # Windows counterpart; uv run python -> python -> py -3
 ├── ani_py.py               # the monolith - all app logic
+├── install.sh              # POSIX installer (curl | sh, --deps, --prefix)
+├── install.bat             # Windows installer (--deps, --prefix, --no-path); needs ani-py.bat beside it
+├── uninstall.sh            # POSIX removal helper
+├── pyproject.toml          # uv/project metadata; deps stay empty on purpose
+├── uv.lock                 # committed lock (resolves the project only)
+├── Makefile                # make test -> the four-stage gate
 ├── tests/test_*.py         # stdlib unittest suite
-├── scripts/                # run-tests.sh, smoke-help.sh, check-tools.sh, build-standalone.sh
-├── docs/                   # banner image
+├── scripts/                # run-tests.sh + run-tests.bat, smoke-help.sh, check-tools.sh, check-providers-live.sh, check-termux.sh, build-standalone.sh
+├── docs/                   # banner image, development.md
 ├── dist/                   # built standalone artifact
-├── .github/workflows/      # CI
+├── .github/workflows/      # CI (ubuntu-latest only)
+├── .gitattributes          # pins .bat/.cmd to CRLF
+├── README.md
 ├── CHANGELOG.md
 └── CONTEXT.md              # maintainer-oriented project memory (see docs/development.md)
 ```
@@ -148,6 +159,22 @@ provider-aware history.
 **Reason:** Single-file portability, no install/venv friction for a
 personal CLI.
 **Alternatives Considered:** [likely: requests/click/pytest - rejected for dependency weight]
+
+### uv-managed dev environment, still zero runtime deps
+**Choice:** `pyproject.toml` + committed `uv.lock` manage the development
+environment. `dependencies` stays empty, `[tool.uv] package = false` because
+ani-py is a script project rather than a distribution, and `tests/test_cli.py`
+asserts both invariants plus that the manifest version tracks
+`ani_py.VERSION` (PEP 440 drops the dash: `0.5.2-rc10` → `0.5.2rc10`).
+**Status:** Current (added after 0.5.2-rc10)
+**Reason:** uv pins the interpreter without adding a single package, so the
+stdlib-only rule survives the tooling. `package = false` is required - without
+it `uv sync` tries to build the project as a wheel, and there is no package
+layout to build.
+**Alternatives Considered:** `uv init` default scaffolding (rejected: it
+assumes a package layout and a build backend ani-py does not want); dynamic
+version from `ani_py.VERSION` (rejected: needs a build backend even though
+nothing is built); pytest (rejected - stdlib `unittest` already passes).
 
 ### Hianime as the (current) provider
 **Choice:** Scrape hianime; provider markup isolated in `HianimeProvider`.
@@ -263,10 +290,47 @@ flags safely; private socket avoids hijacking the user's mpv.
   with `sty()` never round-trip exactly - match picks ANSI-insensitively
   (see `_strip_ansi`; `_from_history` regressed as `ValueError` on Termux).
 
+### Windows batch (.bat)
+- **`shift` corrupts `%~dp0`.** In `install.bat` the original
+  `set "STUB_SRC=%~dp0ani-py.bat"` silently resolved to the *parent* of
+  the script directory once two `shift`s had run (verified: `%CD%` stayed
+  correct while `%~dp0` lost a path component). Fix: capture
+  `set "SCRIPT_DIR=%~dp0"` as the first statement, before any `shift`,
+  and use `%SCRIPT_DIR%` thereafter. `ani-py.bat` is unaffected because it
+  never calls `shift` (it forwards `%*` verbatim).
+- **cmd strips doubled `""` before PowerShell sees them.** `powershell
+  -Command "...GetEnvironmentVariable(""Path"",""User"")..."` arrives as
+  `("Path,User)` and dies with a ParserError. Use **single** quotes in
+  the PowerShell payload; cmd passes them through untouched.
+- Prefer copying a checked-in launcher over generating it with `echo`
+  lines. Generating required doubling every `%` and escaping every `>`,
+  and still embedded the installer's absolute path.
+- `if cond set "X=1" & shift & goto :lbl` runs `shift`/`goto`
+  unconditionally — `&` separates top-level commands. Wrap the body in
+  parentheses: `if cond (set "X=1" & shift & goto :lbl)`.
+- **Never name a script variable `TMP`.** `TMP`/`TMPDIR` are standard
+  environment variables that child processes treat as a temp *directory*.
+  `install.bat` originally used `set "TMP=..."` for its download scratch
+  file; `uv python install` then mkdir'd a directory at that path, and the
+  later `curl -o` failed with `curl: (23) client returned ERROR on write`
+  because a file cannot be created where a directory already sits. Only a
+  real run with `--deps` exposed it. Use a namespaced name (`ANI_PY_TMP`).
+- Windows installers may be installed yet invisible: VLC's installer never
+  adds `vlc.exe` to `PATH`, so a PATH-only probe reports "not found" on a
+  machine where VLC is present. Probe `%ProgramFiles%\VideoLAN\VLC\vlc.exe`
+  (see `default_vlc_paths()` in `ani_py.py`), and check **both** the auto
+  chain and the explicit `--player vlc` branch.
+- `setx` truncates PATH at 1024 chars; use
+  `[Environment]::SetEnvironmentVariable('Path', ..., 'User')` and
+  communicate the result through the process exit code (2 = added,
+  0 = already present, 1 = failed) so the batch file needs no `for /f`
+  output capture.
+
 **Assumptions to avoid:**
 - Never assume every episode exposes the same quality renditions.
 - Never assume `ani-skip` is installed - the app warns and continues.
 - Never assume `~/.local/bin/ani-py` and the repo are in sync.
+- Never assume `%~dp0` still points at the script after a `shift`.
 
 ---
 
@@ -312,20 +376,49 @@ flags safely; private socket avoids hijacking the user's mpv.
 ## 13. Development Commands
 
 ```bash
-# Full gate
+# Full gate (POSIX shell)
 make test          # scripts/run-tests.sh: compile + unittest + help/version smoke + standalone build
 make smoke         # compile + --help
 make tools         # external binary check
 make build         # standalone artifact to dist/
+
+# Portable / Windows path
+uv sync
+uv run python -m unittest discover -s tests
+uv run python ani-py --version
+
+# Windows full gate (no bash/make needed)
+scripts\run-tests.bat
+
+# Windows install (run from a checkout)
+install.bat --prefix "%TEMP%\ani-py-check" --no-path
 ```
 
 **Verification commands:**
 
 ```bash
-python3 -m py_compile ani_py.py ani-py
-python3 -m unittest discover -s tests
+uv run python -m py_compile ani_py.py ani-py
+uv run python -m unittest discover -s tests
 ./ani-py --help && ./ani-py --version
+cmd /c ani-py.bat --version
 ```
+
+**Gotchas:**
+
+- `uv run ./ani-py` fails on Windows (`%1 is not a valid Win32 application`)
+  because the launcher is a POSIX shebang script. Use `uv run python ani-py`
+  cross-platform. `make test` likewise needs bash — use
+  `scripts\run-tests.bat`, which runs the same four stages through `cmd`.
+- `ani-py.bat` and `install.bat` are the Windows counterparts of `ani-py`
+  and `install.sh`. `ani-py.bat` prefers `uv run python` so a checkout is
+  resolved through `pyproject.toml`/`uv.lock`; outside a project `uv run`
+  is a pass-through that creates nothing.
+- `.bat` files must be CRLF; `.gitattributes` enforces this, so normalize
+  with a `.bat` file's bytes to CRLF after any tool rewrites it.
+- `core.autocrlf=true` with no `*.sh` rule means `.sh` files check out with
+  CRLF on Windows, so their shebang becomes `env bash\r`. `.gitattributes` pins
+  CRLF for `*.bat`/`*.cmd`; the `.sh` scripts still need a POSIX host (or a
+  `*.sh text eol=lf` rule) to execute correctly.
 
 **Common debugging:**
 
