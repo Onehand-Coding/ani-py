@@ -32,6 +32,27 @@ class TestCoreHelpers(unittest.TestCase):
         chosen = ani_py.choose_quality(streams, '720')
         self.assertEqual(chosen.quality, '720p')
 
+    def test_choose_subtitle_track_by_language_label_and_off(self):
+        bundle = ani_py.StreamBundle(
+            streams=[ani_py.Stream("720p", "video")],
+            subtitle="https://subs/en.vtt",
+            referer="https://embed/",
+            mal_id="1",
+            subtitles=[
+                ani_py.SubtitleTrack("https://subs/en.vtt", "en", "English", True),
+                ani_py.SubtitleTrack("https://subs/de.vtt", "de", "German"),
+                ani_py.SubtitleTrack("https://subs/signs.vtt", "en", "Signs & Songs"),
+            ],
+        )
+        self.assertEqual(ani_py.choose_subtitle_track(bundle, "de").url, "https://subs/de.vtt")
+        self.assertEqual(
+            ani_py.choose_subtitle_track(bundle, "label:Signs & Songs").url,
+            "https://subs/signs.vtt",
+        )
+        self.assertIsNone(ani_py.choose_subtitle_track(bundle, "off"))
+        self.assertIsNone(ani_py.choose_subtitle_track(bundle, "fr"))
+        self.assertEqual(ani_py.choose_subtitle_track(bundle, "auto").url, "https://subs/en.vtt")
+
     def test_parse_episode_spec_single(self):
         result = ani_py.parse_episode_spec('3', self.episodes)
         self.assertEqual([e.number for e in result], ['3'])

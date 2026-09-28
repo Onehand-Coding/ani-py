@@ -101,6 +101,31 @@ class TestDownload(unittest.TestCase):
             self.assertIn("https://cdn.example/sub.vtt", sub_cmd)
             self.assertTrue(sub_cmd[-1].endswith("Episode 1.vtt"))
 
+    @patch("ani_py.HttpClient")
+    @patch("ani_py.subprocess.run")
+    @patch("ani_py.shutil.which", return_value="/opt/bin/yt-dlp")
+    def test_subtitle_download_uses_language_in_filename(self, mock_which, mock_run, mock_http):
+        mock_http.return_value.exe = "/opt/bin/curl"
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(args=[], returncode=0),
+            subprocess.CompletedProcess(args=[], returncode=0),
+        ]
+        pb = self.make_playback()
+        stream = ani_py.Stream("1080p", "https://cdn.example/video.m3u8")
+
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"ANI_PY_DOWNLOAD_DIR": td}, clear=False):
+            rc = pb.download(
+                stream,
+                title="Episode 1",
+                subtitle="https://cdn.example/de.vtt",
+                subtitle_language="de",
+                subtitle_label="German",
+                referer="https://embed.example/",
+            )
+            self.assertEqual(rc, 0)
+            sub_cmd = mock_run.call_args_list[0].args[0]
+            self.assertTrue(sub_cmd[-1].endswith("Episode 1.de.vtt"))
+
     @patch("ani_py.warn")
     @patch("ani_py.HttpClient")
     @patch("ani_py.subprocess.run")

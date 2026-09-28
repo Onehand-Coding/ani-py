@@ -15,12 +15,18 @@ class TestCLI(unittest.TestCase):
         self.assertTrue(ns.skip)
         self.assertEqual(ns.query, ["frieren"])
 
+        sub_ns = parser.parse_args(["--sub-lang", "de", "frieren"])
+        self.assertEqual(sub_ns.sub_lang, "de")
+        attach_ns = parser.parse_args(["--attach"])
+        self.assertTrue(attach_ns.attach)
+
     def test_environment_defaults(self):
         with patch.dict(os.environ, {
             "ANI_PY_MODE": "dub",
             "ANI_PY_QUALITY": "720",
             "ANI_PY_PLAYER": "mpv",
             "ANI_PY_SKIP_INTRO": "1",
+            "ANI_PY_SUB_LANG": "de",
         }, clear=False):
             parser = ani_py.build_parser()
             ns = parser.parse_args(["frieren"])
@@ -28,6 +34,7 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ns.quality, "720")
         self.assertEqual(ns.player, "mpv")
         self.assertTrue(ns.skip)
+        self.assertEqual(ns.sub_lang, "de")
 
     def test_provider_defaults_include_live_preflight_backup(self):
         # Local divergence from upstream: this checkout keeps the default
@@ -67,7 +74,7 @@ class TestCLI(unittest.TestCase):
             parser.parse_args(["--android-player", "mpv", "frieren"])
 
     def test_version_is_current(self):
-        self.assertEqual(ani_py.VERSION, "0.5.2-rc10")
+        self.assertEqual(ani_py.VERSION, "0.5.2-rc11")
 
     def test_anilight_provider_can_be_selected_explicitly(self):
         parser = ani_py.build_parser()

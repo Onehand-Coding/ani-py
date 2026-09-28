@@ -113,6 +113,27 @@ class TestPlayers(unittest.TestCase):
     @patch.object(ani_py.Playback, "active", return_value=True)
     @patch.object(ani_py.Playback, "_ipc")
     @patch("ani_py.which_first", return_value="/usr/bin/mpv")
+    def test_mpv_subtitle_switch_uses_ipc(self, mock_which, mock_ipc, mock_active):
+        pb = ani_py.Playback(args(player="mpv"))
+        pb.ipc_path = ani_py.Path("/tmp/test.sock")
+        track = ani_py.SubtitleTrack("https://cdn.example/de.vtt", "de", "German")
+        self.assertTrue(pb.set_subtitle(track))
+        mock_ipc.assert_called_once_with(
+            ["sub-add", track.url, "select", "German", "de"]
+        )
+
+    @patch.object(ani_py.Playback, "active", return_value=True)
+    @patch.object(ani_py.Playback, "_ipc")
+    @patch("ani_py.which_first", return_value="/usr/bin/mpv")
+    def test_mpv_subtitle_off_uses_sid_no(self, mock_which, mock_ipc, mock_active):
+        pb = ani_py.Playback(args(player="mpv"))
+        pb.ipc_path = ani_py.Path("/tmp/test.sock")
+        self.assertTrue(pb.set_subtitle(None))
+        mock_ipc.assert_called_once_with(["set_property", "sid", "no"])
+
+    @patch.object(ani_py.Playback, "active", return_value=True)
+    @patch.object(ani_py.Playback, "_ipc")
+    @patch("ani_py.which_first", return_value="/usr/bin/mpv")
     def test_replay_seeks_current_mpv(self, mock_which, mock_ipc, mock_active):
         pb = ani_py.Playback(args(player="mpv"))
         pb.ipc_path = ani_py.Path("/tmp/test.sock")

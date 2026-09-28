@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased (0.5.2-rc10)
+## Unreleased (0.5.2-rc11)
+
+- Added multi-track soft-subtitle support. HiAnime now preserves every exposed subtitle track instead of discarding all but the default; AnimeKai/Kuhi adapters preserve track lists when their payloads provide them.
+- Added `Change subtitle` to the interactive controller and `--sub-lang` / `ANI_PY_SUB_LANG` for language/label selection. Desktop mpv switches tracks live over IPC; non-mpv/Android paths relaunch playback when needed.
+- Downloads can select a subtitle language/label and save it beside the video with a language-aware filename such as `Episode 1.de.vtt`.
+- Desktop mpv `Detach & exit` now records a reattachable session. `ani-py --attach` restores controller state over the existing private mpv IPC socket without restarting playback, and no-query startup can offer the same reattachment.
 
 - Updated `--skip` integration for current `ani-skip` by passing provider-supplied MAL ids through the direct `-i/--id` interface instead of the legacy numeric `-q/--query` compatibility path.
 

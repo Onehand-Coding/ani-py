@@ -204,6 +204,45 @@ class TestAppFlow(unittest.TestCase):
         self.assertIn("One Piece", second_menu_header)
         self.assertIn("Episode 2", second_menu_header)
 
+    def test_change_subtitle_switches_live_mpv_without_reloading_video(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args()
+        anime = ani_py.Anime("frieren-999", "Frieren")
+        episodes = [ani_py.Episode("101", "1")]
+        english = ani_py.SubtitleTrack("https://subs/en.vtt", "en", "English", True)
+        german = ani_py.SubtitleTrack("https://subs/de.vtt", "de", "German")
+        bundle = ani_py.StreamBundle(
+            streams=[ani_py.Stream("1080p", "https://video")],
+            subtitle=english.url,
+            referer="https://embed/",
+            mal_id="52991",
+            provider="hianime",
+            subtitles=[english, german],
+        )
+        app.playback = Mock()
+        app.playback.active.return_value = True
+        app.playback.set_subtitle.return_value = True
+        app.providers = Mock()
+        app.providers.get.return_value.display_name = "HiAnime"
+        app.menu = Mock()
+        app.menu.choose.side_effect = [
+            ["Change subtitle"],
+            ["German [de]"],
+            ["Stop & quit"],
+        ]
+        app._bundle = Mock(return_value=bundle)
+        app._play_episode = Mock(return_value=0)
+        app.last_stream = ani_py.Stream("1080p", "https://video")
+        app.last_provider = "hianime"
+        app.last_subtitle = english
+        app.subtitle_preference = "auto"
+
+        app._interactive_loop(anime, episodes, episodes[0], "1080")
+
+        app.playback.set_subtitle.assert_called_once_with(german)
+        app._play_episode.assert_not_called()
+        self.assertEqual(app.subtitle_preference, "label:German")
+
     def test_clear_history_short_circuits(self):
         app = object.__new__(ani_py.App)
         app.args = app_args(clear_history=True)
