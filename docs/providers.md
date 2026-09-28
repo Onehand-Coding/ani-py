@@ -8,8 +8,15 @@ ani-py keeps provider-specific scraping behind adapters so provider changes do n
 |---|---|---:|
 | HiAnime | primary | yes |
 | AniLight | experimental / opt-in | no |
-| Kuhi | experimental / opt-in | no |
-| AnimeKai | experimental / manual | no |
+
+## Retired providers
+
+Kuhi and AnimeKai were removed in 0.5.2-rc11 after their upstreams went away.
+The Kuhi public deployment stopped resolving, AnimeKai lost its last trusted
+domain, and neither could return a stream. Both are gone rather than left
+disabled: a provider that cannot resolve costs failover time and implies a
+safety net that is not there. Re-adding one is a normal provider contribution
+once a live source has been verified end to end.
 
 The default automatic order is:
 
@@ -32,22 +39,12 @@ AniLight remains opt-in until it has passed the project's live desktop and
 Termux smoke matrix. Soft-sub/MegaPlay support and provider-native skip metadata
 are not claimed by this adapter yet; `--skip` continues to use `ani-skip`.
 
-Kuhi remains available for explicit use or a user-configured failover order, but a configured endpoint must pass a media extraction preflight before automatic use. The previously used public Kuhi deployment has been unreliable/undeployed.
-
-AnimeKai has no trusted hardcoded default domain. A compatible mirror must be supplied explicitly:
-
-```sh
-ANI_PY_ANIMEKAI_URL=https://your-mirror.example \
-  ani-py --provider animekai "frieren"
-```
-
 ## Commands
 
 ```sh
 ani-py --list-providers
 ani-py --provider hianime "frieren"
 ani-py --provider anilight "frieren"
-ani-py --provider kuhi "frieren"
 ani-py --provider-order hianime,anilight "frieren"
 ```
 
@@ -58,8 +55,6 @@ ANI_PY_PROVIDER
 ANI_PY_PROVIDER_ORDER
 ANI_PY_ANILIGHT_URL
 ANI_PY_ANILIGHT_API_URL
-ANI_PY_KUHI_URL
-ANI_PY_ANIMEKAI_URL
 ```
 
 Use `./scripts/check-providers-live.sh` for a real-network provider check before a release. Mocked parser tests are not evidence that a third-party deployment is currently reachable.

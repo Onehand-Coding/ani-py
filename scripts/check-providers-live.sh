@@ -1,54 +1,68 @@
 #!/usr/bin/env bash
+# Live provider reachability check.
+#
+# Unit tests use mocked HTTP only, so they cannot tell you whether a
+# third-party deployment still exists. This drives the real provider classes
+# against the network so the headers, endpoints, and parsing under test are the
+# ones the app actually uses.
+#
+# The default automatic provider failing is fatal: that is a broken release.
+# An opt-in provider failing is reported but does not fail the check.
 set -euo pipefail
 
-KUHI_URL="${ANI_PY_KUHI_URL:-https://anime-scraper-v2.vercel.app}"
-PROBE="${KUHI_URL%/}/anime/extract/20?e=1&type=sub"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 
-echo "ani-py live provider check"
-echo "Kuhi: $PROBE"
+PROBE="${ANI_PY_LIVE_PROBE:-naruto}"
 
-payload="$(curl -fsSL --max-time 30 -A 'Mozilla/5.0' "$PROBE")" || {
-  echo "[fail] Kuhi request failed" >&2
-  exit 1
-}
+echo "ani-py live provider check (probe: $PROBE)"
 
-printf '%s' "$payload" | python3 -c '
-import json
+python3 - "$PROBE" <<'PY'
 import sys
 
-try:
-    data = json.load(sys.stdin)
-except Exception as exc:
-    raise SystemExit(f"[fail] Kuhi returned invalid JSON: {exc}")
+import ani_py
 
-if not isinstance(data, dict):
-    raise SystemExit("[fail] Kuhi returned a non-object response")
-if data.get("success") is False:
-    message = data.get("message", "request failed")
-    raise SystemExit(f"[fail] Kuhi reported failure: {message}")
+probe = sys.argv[1]
+http = ani_py.HttpClient()
 
-payload = data.get("results") if isinstance(data.get("results"), dict) else data
-streams = payload.get("streams") if isinstance(payload, dict) else None
-if not isinstance(streams, list):
-    raise SystemExit("[fail] Kuhi response has no streams list")
+# Mirrors the provider list in App.__init__; keep the two in step.
+providers = [
+    ani_py.HianimeProvider(http),
+    ani_py.AniLightProvider(http),
+]
+default_names = {p.name for p in providers if not p.experimental}
 
-direct = []
-for item in streams:
-    if not isinstance(item, dict):
+failures = []
+for provider in providers:
+    label = provider.display_name
+    required = provider.name in default_names
+    try:
+        if not provider.available():
+            raise ani_py.ProviderUnavailable("preflight reported unavailable")
+        results = provider.search(probe)
+    except ani_py.AniPyError as exc:
+        print(f"[{'FAIL' if required else 'warn'}] {label}: {exc}")
+        failures.append((label, required))
         continue
-    url = item.get("url") or item.get("file") or item.get("src")
-    kind = str(item.get("type") or "").lower()
-    if isinstance(url, str) and url.startswith(("http://", "https://")) and kind != "embed":
-        direct.append(item)
+    except Exception as exc:  # network/HTTP layer, unexpected payloads
+        print(f"[{'FAIL' if required else 'warn'}] {label}: {type(exc).__name__}: {exc}")
+        failures.append((label, required))
+        continue
 
-if not direct:
-    raise SystemExit("[fail] Kuhi returned no direct playable HTTP(S) stream")
+    if not results:
+        print(f"[{'FAIL' if required else 'warn'}] {label}: preflight passed but search returned nothing")
+        failures.append((label, required))
+        continue
 
-provider = payload.get("provider", "unknown provider")
-print(f"[ok] Kuhi resolved {len(direct)} direct stream(s) via {provider}")
-for item in direct[:3]:
-    kind = item.get("type", "stream")
-    quality = item.get("quality", "auto")
-    url = item.get("url") or item.get("file") or item.get("src") or ""
-    print(f"     {kind:>6}  {quality:>6}  {url[:100]}")
-'
+    print(f"[ok] {label} returned {len(results)} result(s) for {probe!r}")
+    for anime in results[:3]:
+        print(f"        {anime.title[:70]}")
+
+if failures:
+    blocking = [name for name, required in failures if required]
+    if blocking:
+        raise SystemExit(f"[fail] required provider(s) unreachable: {', '.join(blocking)}")
+    print("[warn] optional provider(s) unreachable; the default chain is unaffected")
+PY
+
+echo "All default providers are reachable."

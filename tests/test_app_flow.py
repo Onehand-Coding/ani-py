@@ -16,7 +16,7 @@ def app_args(**overrides):
         exit_after_play=False,
         list_providers=False,
         provider="auto",
-        provider_order="hianime,kuhi",
+        provider_order="hianime,anilight",
         select_nth=None,
         episode=None,
         mode="sub",
