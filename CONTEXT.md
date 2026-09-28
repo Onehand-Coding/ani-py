@@ -28,7 +28,7 @@ networking, menus, playback, and downloads to best-of-breed external tools.
 
 **Current Development Focus:** Live-test the new direct AniLight adapter on desktop and Termux while keeping the HiAnime-only default automatic chain.
 
-**Longer-Term Direction:** Multi-provider support landed in 0.4.0 and now includes HiAnime and AniLight adapters. AniLight is the current candidate for a dependable direct backup. Kuhi and AnimeKai were removed in 0.5.2-rc11 once their upstreams were confirmed dead.
+**Longer-Term Direction:** Multi-provider support landed in 0.4.0 and now includes HiAnime and AniLight adapters. AniLight is the current candidate for a dependable direct backup. Kuhi and AnimeKai were removed in 0.5.2-rc11 once their upstreams were confirmed dead. The 3rd-provider slot is intentionally left open - see "Third provider search closed" in §8.
 
 ---
 
@@ -184,6 +184,34 @@ the real provider classes so this class of decay is caught before a release.
 return a stream, so there is nothing to opt into); leaving the classes for
 reference (rejected: Git history is the archive, and they would rot).
 
+### Third provider search closed (0.5.2-rc11)
+**Choice:** Leave the 3rd-provider slot empty rather than ship a provider that
+cannot produce a playable stream. PR #4 (KAA + AniNeko + AniKoto) was closed
+unmerged and its branch deleted; the commits remain recoverable from the
+closed PR.
+**Status:** Current. The 3rd slot is deliberately open.
+**Reason:** Every candidate was live-tested against one bar: search, episode
+list, resolve, and an `ffprobe`-confirmed **audio** stream. A video-only
+stream is a reject, because a silent anime player is not a working provider.
+- **KAA** (`kaa.lt`) - resolves to two HLS streams and mpv decodes them
+  after `--demuxer-lavf-o=allowed_extensions=ALL`, but all sampled segments
+  (both streams, 5 points across an episode) are h264 video with **no audio
+  stream at all**, and `master.m3u8` 404s so there is no quality or audio
+  variant to fall back to.
+- **AniKoto** (`anikototv.to`) - catalog works, `resolve()` fails outright.
+- **AniNeko** (`anineko.to`) - returns a ~2 KB JavaScript shell, zero results.
+- **AniHQ** (`anihq.cc`) - the cleanest catalog found: public, auth-free WP
+  REST over `anime`/`episode` with working `?search=`. Streams sit behind
+  `kiranime/v1` routes that return 401 for anonymous callers (the page's
+  `*_actions` and `global_nonce` values are theme nonces and do not satisfy
+  REST auth), and a real headless browser is stopped by Cloudflare before the
+  player ever requests a source.
+**Alternatives Considered:** A browser or anti-bot layer (rejected: ani-py is
+stdlib-only by design, and Cloudflare evasion is a different product with a
+different risk profile); shipping a video-only provider as experimental
+(rejected: it still looks like failover coverage that does not exist, which is
+the exact failure mode that made Kuhi and AnimeKai worth deleting).
+
 ### AnimeKai demoted to experimental opt-in
 **Choice:** Default `--provider-order` is `hianime` only; AnimeKai requires
 explicit opt-in (`--provider animekai`, `--provider-order hianime,animekai`,
@@ -287,6 +315,24 @@ because they have no private socket to reconnect to.
 ### Provider / network
 - Hianime markup changes silently break search/resolve - when streams
   fail, check markup first; the fix is confined to `HianimeProvider`.
+- ffmpeg's HLS demuxer rejects segments whose extension is not in its
+  allowlist, and it prints a misleading `mime type is not rfc8216
+  compliant` rather than the real reason. KAA serves MPEG-TS as `.jpg`
+  and fails exactly this way. mpv recovers with
+  `--demuxer-lavf-o=allowed_extensions=ALL`; the ffmpeg CLI flag
+  `-allowed_extensions ALL` does *not* work for the same URL, because the
+  option only takes effect on the demuxer context.
+- A provider that resolves to a playable stream is not the same as a
+  provider that works. KAA resolves cleanly and mpv decodes it, yet every
+  segment is video-only with no audio. Always ffprobe a real segment for
+  an audio stream before calling any provider viable.
+- Never conclude an anime site is dead from a failed search. Verify with a
+  bare homepage fetch first - an assumed URL shape yields a false "dead"
+  reading on sites that are perfectly alive.
+- WordPress anime themes gate streams behind an authenticated REST nonce
+  (anonymous `kiranime/v1` calls return 401) even when the catalog is
+  fully public over `wp-json/wp/v2`. A usable catalog is not a usable
+  provider.
 - CDN throughput varies (~400KB/s observed); slow downloads are usually
   the CDN, not the app. yt-dlp fragment retries handle transient stalls.
 
