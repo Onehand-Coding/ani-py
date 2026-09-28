@@ -14,7 +14,7 @@
   the headers and endpoints the app actually uses. The default provider failing
   is now fatal (a broken release); an opt-in provider failing only warns.
 
-- Added multi-track soft-subtitle support. HiAnime now preserves every exposed subtitle track instead of discarding all but the default; AnimeKai/Kuhi adapters preserve track lists when their payloads provide them.
+- Added multi-track soft-subtitle support. HiAnime now preserves every exposed subtitle track instead of discarding all but the default.
 - Added `Change subtitle` to the interactive controller and `--sub-lang` / `ANI_PY_SUB_LANG` for language/label selection. Desktop mpv switches tracks live over IPC; non-mpv/Android paths relaunch playback when needed.
 - Downloads can select a subtitle language/label and save it beside the video with a language-aware filename such as `Episode 1.de.vtt`.
 - Desktop mpv `Detach & exit` now records a reattachable session. `ani-py --attach` restores controller state over the existing private mpv IPC socket without restarting playback, and no-query startup can offer the same reattachment.
@@ -28,8 +28,7 @@
   until their current CDN/proxy behavior is live-tested with ani-py. AniLight
   remains opt-in and is not in the default automatic chain yet.
 - Added `Search another anime` to the interactive playback menu. The current player stays running while a new title and episode are selected, then playback is replaced in the same ani-py session.
-- Kept the default automatic provider order at `hianime` only; Kuhi and
-  AnimeKai remain experimental opt-in providers.
+- Kept the default automatic provider order at `hianime` only; AniLight remains an experimental opt-in provider.
 - Android subtitles use the loopback HLS relay as a native subtitle rendition.
   The injected group now uses a collision-resistant `ani-py-subs` id, leaves
   existing upstream subtitle topology untouched, and carries language/label
