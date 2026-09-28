@@ -129,7 +129,7 @@ provider-aware history.
 
 **CLI:**
 - Env-var defaults mirror flags (`ANI_PY_*`: mode, quality, player,
-  skip, detach, download dir, IPC socket, menu flags).
+  skip, detach, download dir, IPC socket, menu flags, subtitle language).
 - Passthrough options (`--menu-flags`, `--player-flag`) take dash-flags
   only via the `--opt='--flag'` equals form (argparse limitation) -
   documented in `--help`, covered by `tests/test_cli.py`.
@@ -221,6 +221,35 @@ flags safely; private socket avoids hijacking the user's mpv.
 **Live-device result:** VLC 3.7.1 and mpv-android both played subtitles through the HLS rendition on the project owner's Termux device. On that VLC setup, English auto-selection required the one-time custom libVLC option `--sub-language=eng`; treat this as a tested player/device preference, not a universal VLC requirement.
 **Known limitation:** If the ROM destroys VLC's activity in the background, playback can restart at position 0 on return because the external intent does not carry a resume position.
 
+### Multi-track soft subtitles and detached mpv reattachment (0.5.2-rc11)
+**Choice:** Providers keep `subtitles: list[SubtitleTrack]` on the stream
+bundle instead of collapsing to one URL; `subtitle_tracks` synthesises a
+track from the legacy single `subtitle` field when a provider still sets
+only that. Selection is always explicit - `--sub-lang` / `ANI_PY_SUB_LANG`
+or `Change subtitle` in the controller - never an automatic pick. Desktop
+mpv switches tracks live over the private IPC socket; VLC/IINA/Android use
+the existing replace-and-relaunch path. `Detach & exit` on desktop mpv
+writes a small session record (private socket + anime/controller context),
+and `ani-py --attach` reconnects to the same process; no-query startup
+offers the same reattachment.
+**Status:** Current
+**Reason:** Collapsing provider subtitle lists to one URL discarded
+selectable tracks HiAnime/AnimeKai/Kuhi already expose. Reattachment reuses
+the running mpv instead of restarting playback and losing position.
+**Invariants:**
+- An explicit language/label request is strict. A miss selects no
+  subtitle and warns (`choose_subtitle_track`); it never falls back to a
+  different language. Only `auto` picks a default.
+- Download subtitles are written beside the video with a language-aware
+  name (e.g. `Episode 1.de.vtt`); `--sub-lang off` disables external
+  subtitles entirely.
+- Stale or dead session records are rejected and cleaned up, not adopted.
+- An mpv IPC switch changes the subtitle track only; it does not reload
+  the video.
+**Limitations:** Only desktop mpv is reattachable. Android intent players
+and the other desktop players keep their existing plain-detach behaviour,
+because they have no private socket to reconnect to.
+
 ---
 
 ## 9. Domain Knowledge
@@ -255,8 +284,10 @@ flags safely; private socket avoids hijacking the user's mpv.
 - Interactive menus need a TTY; headless runs hang or die at the prompt.
 
 ### Shell / processes
-- Detached mpv survives the controller - a crashed script leaves an
-  orphan player + IPC socket behind; check `pgrep -f mpv` after failures.
+- Detached mpv survives the controller. A clean `Detach & exit` on desktop
+  mpv records a session that `--attach` can adopt, but a *crashed* script
+  still leaves an orphan player + IPC socket behind; check `pgrep -f mpv`
+  after failures.
 - `pkill -f <pattern>` matches your own shell's command line; exclude
   self before killing test players.
 - `fzf --ansi` strips ANSI codes from its output, so menu rows built
