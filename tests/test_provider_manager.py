@@ -47,8 +47,8 @@ class TestProviderManager(unittest.TestCase):
         app.menu = Mock()
         original = ani_py.Anime("a", "Frieren: Beyond Journey's End", "hianime")
         candidates = [
-            ani_py.Anime("x", "Frieren: Beyond Journey's End", "animekai"),
-            ani_py.Anime("y", "Frieren Season 2", "animekai"),
+            ani_py.Anime("x", "Frieren: Beyond Journey's End", "anilight"),
+            ani_py.Anime("y", "Frieren Season 2", "anilight"),
         ]
         chosen = app._choose_fallback_candidate(original, candidates)
         self.assertEqual(chosen.provider_id, "x")
@@ -57,12 +57,12 @@ class TestProviderManager(unittest.TestCase):
     def test_ambiguous_title_match_asks_user(self):
         app = object.__new__(ani_py.App)
         app.providers = Mock()
-        app.providers.get.return_value.display_name = "AnimeKai"
+        app.providers.get.return_value.display_name = "AniLight"
         app.menu = Mock()
         original = ani_py.Anime("a", "One Piece", "hianime")
         candidates = [
-            ani_py.Anime("x", "One Piece Movie", "animekai"),
-            ani_py.Anime("y", "One Piece Fan Letter", "animekai"),
+            ani_py.Anime("x", "One Piece Movie", "anilight"),
+            ani_py.Anime("y", "One Piece Fan Letter", "anilight"),
         ]
         # Return the first rendered row, proving we don't silently choose it.
         app.menu.choose.side_effect = lambda rows, *args, **kwargs: [rows[0]]
@@ -100,10 +100,10 @@ class ResolveProvider(ani_py.Provider):
 class TestAppProviderFailover(unittest.TestCase):
     def test_stream_resolution_fails_over_to_matching_backup_episode(self):
         primary = ResolveProvider("hianime", "Frieren", fail_resolve=True)
-        backup = ResolveProvider("animekai", "Frieren", fail_resolve=False)
+        backup = ResolveProvider("anilight", "Frieren", fail_resolve=False)
         app = object.__new__(ani_py.App)
         app.args = argparse.Namespace(provider="auto", mode="sub")
-        app.providers = ani_py.ProviderManager([primary, backup], ["hianime", "animekai"])
+        app.providers = ani_py.ProviderManager([primary, backup], ["hianime", "anilight"])
         app.menu = Mock()
         app.bundle_cache = {}
         app.episode_cache = {}
@@ -112,24 +112,24 @@ class TestAppProviderFailover(unittest.TestCase):
         episode = ani_py.Episode("hianime-ep1", "1")
         with patch("ani_py.sys.stderr", new=io.StringIO()):
             bundle = app._bundle(anime, episode)
-        self.assertEqual(bundle.provider, "animekai")
+        self.assertEqual(bundle.provider, "anilight")
         self.assertEqual(bundle.streams[0].quality, "720p")
-        self.assertEqual(app.fallback_map[("hianime", "hianime-id")].provider, "animekai")
+        self.assertEqual(app.fallback_map[("hianime", "hianime-id")].provider, "anilight")
 
 
 class TestExperimentalPreflight(unittest.TestCase):
-    def _animekai(self, http):
-        provider = ani_py.AnimeKaiProvider.__new__(ani_py.AnimeKaiProvider)
+    def _anilight(self, http):
+        provider = ani_py.AniLightProvider.__new__(ani_py.AniLightProvider)
         provider.http = http
         provider.base = "https://example.test"
-        provider._info_cache = {}
+        provider.api = "https://example.test/api"
         provider._available = None
         return provider
 
     def test_preflight_passes_on_valid_fixture(self):
         http = Mock()
-        http.get_json.return_value = {"result": {"html": '<a class="aitem" href="/watch/x">t</a>'}}
-        provider = self._animekai(http)
+        http.get_json.return_value = {"results": [{"title": "Naruto"}]}
+        provider = self._anilight(http)
         with patch("ani_py.sys.stderr", new=io.StringIO()):
             self.assertTrue(provider.available())
             self.assertTrue(provider.available())
@@ -138,20 +138,21 @@ class TestExperimentalPreflight(unittest.TestCase):
     def test_preflight_fails_on_challenge_page(self):
         http = Mock()
         http.get_json.side_effect = ani_py.HttpError("Expected JSON from https://example.test")
-        provider = self._animekai(http)
+        provider = self._anilight(http)
         with patch("ani_py.sys.stderr", new=io.StringIO()):
             self.assertFalse(provider.available())
 
     def test_preflight_fails_on_schema_mismatch(self):
         http = Mock()
         http.get_json.return_value = {"unexpected": True}
-        provider = self._animekai(http)
+        provider = self._anilight(http)
         with patch("ani_py.sys.stderr", new=io.StringIO()):
             self.assertFalse(provider.available())
 
-    def test_no_base_means_unavailable(self):
-        provider = self._animekai(Mock())
-        provider.base = ""
+    def test_preflight_fails_on_empty_results(self):
+        http = Mock()
+        http.get_json.return_value = {"results": []}
+        provider = self._anilight(http)
         with patch("ani_py.sys.stderr", new=io.StringIO()):
             self.assertFalse(provider.available())
 

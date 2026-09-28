@@ -28,7 +28,7 @@ networking, menus, playback, and downloads to best-of-breed external tools.
 
 **Current Development Focus:** Live-test the new direct AniLight adapter on desktop and Termux while keeping the HiAnime-only default automatic chain.
 
-**Longer-Term Direction:** Multi-provider support landed in 0.4.0 and now includes HiAnime, AniLight, Kuhi, and AnimeKai adapters. AniLight is the current candidate for a dependable direct backup; Kuhi and AnimeKai remain experimental legacy options until they prove live and maintainable.
+**Longer-Term Direction:** Multi-provider support landed in 0.4.0 and now includes HiAnime and AniLight adapters. AniLight is the current candidate for a dependable direct backup. Kuhi and AnimeKai were removed in 0.5.2-rc11 once their upstreams were confirmed dead.
 
 ---
 
@@ -109,8 +109,7 @@ provider-aware history.
 
 - All app logic lives in `ani_py.py`; `./ani-py` stays a thin launcher.
 - All scraping/network parsing stays in provider adapters
-  (`HianimeProvider`, `AniLightProvider`, `KuhiProvider`,
-  `AnimeKaiProvider`) - never in `App`,
+  (`HianimeProvider`, `AniLightProvider`) - never in `App`,
   `Playback`, or `Menu`. `ProviderManager` owns selection/failover.
 - Player control goes through `Playback` (private per-process mpv IPC
   socket by default; never hijack a shared `/tmp/mpvsocket`).
@@ -162,15 +161,28 @@ personal CLI.
 
 ### hianime-only default (v0.5.0 divergence)
 **Choice:** This checkout keeps `--provider-order` default at `hianime` even
-though upstream v0.5.0 ships `hianime,kuhi`. Kuhi and AnimeKai stay
-experimental opt-in until a live instance is confirmed from this network.
+though upstream v0.5.0 ships `hianime,kuhi`. AniLight is opt-in until a live
+instance is confirmed from this network.
 **Status:** Current
 **Reason:** The Kuhi public instance returns `DEPLOYMENT_NOT_FOUND` and
 AnimeKai has no trusted domain - auto-probing either every run wastes time
 and warns noise. Re-enable by changing one default when verified.
 **Alternatives Considered:** Upstream default as-is (rejected: dead preflight
-on every run); removing the providers entirely (rejected: machinery is good
-and activates via one env var).
+on every run).
+
+### Kuhi and AnimeKai removed (0.5.2-rc11)
+**Choice:** Both adapters, their tests, their env overrides, and their CLI
+choices are deleted rather than left disabled.
+**Status:** Current
+**Reason:** Verified dead on the live network, not merely unconfigured. The
+Kuhi API returns HTTP 404 on its search and extract endpoints, and AnimeKai
+has no domain that answers. A provider that cannot resolve still costs
+failover time and implies a safety net that is not there; disabled dead code
+is worse than absent dead code. `scripts/check-providers-live.sh` now drives
+the real provider classes so this class of decay is caught before a release.
+**Alternatives Considered:** Keeping them as opt-in (rejected: they cannot
+return a stream, so there is nothing to opt into); leaving the classes for
+reference (rejected: Git history is the archive, and they would rot).
 
 ### AnimeKai demoted to experimental opt-in
 **Choice:** Default `--provider-order` is `hianime` only; AnimeKai requires
@@ -178,7 +190,8 @@ explicit opt-in (`--provider animekai`, `--provider-order hianime,animekai`,
 or `ANI_PY_ANIMEKAI_URL` override) and must pass a live preflight (known
 AJAX search → JSON schema → result-anchor fragment) before automatic paths
 use it. `--list-providers` tags it `[experimental]`.
-**Status:** Current
+**Status:** Superseded by "Kuhi and AnimeKai removed" in 0.5.2-rc11. Kept as
+the record of why the provider was distrusted before it was deleted.
 **Reason:** v0.4.0 shipped AnimeKai as an enabled backup on contract evidence
 only - no live request ever succeeded. The hardcoded `anikai.to` has no DNS
 answer and reachable mirrors serve anti-bot/parking pages. A configured name
@@ -234,7 +247,7 @@ and `ani-py --attach` reconnects to the same process; no-query startup
 offers the same reattachment.
 **Status:** Current
 **Reason:** Collapsing provider subtitle lists to one URL discarded
-selectable tracks HiAnime/AnimeKai/Kuhi already expose. Reattachment reuses
+selectable tracks HiAnime already exposes. Reattachment reuses
 the running mpv instead of restarting playback and losing position.
 **Invariants:**
 - An explicit language/label request is strict. A miss selects no
@@ -317,7 +330,7 @@ because they have no private socket to reconnect to.
 **Important Directories:**
 | Directory | Purpose |
 |---|---|
-| `tests/` | Unit suite (`animekai`, `kuhi`, `app_flow`, `cli`, `download`, `http`, `menu`, `playback`, `players`, `provider`, `provider_manager`, `skip`) |
+| `tests/` | Unit suite (`app_flow`, `cli`, `core`, `download`, `http`, `menu`, `playback`, `players`, `provider`, `provider_manager`, `session`, `skip`) |
 | `scripts/` | Test/build/tool-check automation |
 | `docs/` | Android, provider, development docs plus screenshots/clips |
 | `dist/` | Standalone build output |
@@ -375,18 +388,15 @@ ANI_PY_DOWNLOAD_DIR=/tmp/x          # redirect downloads
 |---|---|
 | hianime (scraped) | Primary: search, episodes, stream/subtitle resolve |
 | AniLight | Experimental direct backup: AniList/slug search, sub/dub portable progressive source via AniLight API proxy, MAL metadata |
-| AnimeKai (scraped) | Experimental backup via AJAX + `enc-dec.app` token/decryption helper; no trusted default domain (explicit mirror required) |
-| Kuhi (API) | Experimental backup via AniList search + stream extraction; deep media preflight required; default public instance currently undeployed |
 | CDN media hosts | HLS segments, subtitle files |
 
-Default `auto` mode currently uses HiAnime only. AniLight, Kuhi, and AnimeKai
-are experimental opt-in providers configured through `--provider-order` /
-`ANI_PY_PROVIDER_ORDER`; AniLight is the current live-testing candidate and
-AnimeKai additionally requires an explicit
-`ANI_PY_ANIMEKAI_URL` mirror. The previously tested public Kuhi deployment
-is currently undeployed, and no AnimeKai domain is treated as a trusted
-default. Mocked adapter tests are not evidence that either deployment is
-currently live. If `ani-skip` is missing or errors, `--skip` warns and
+Default `auto` mode currently uses HiAnime only. AniLight is an experimental
+opt-in provider configured through `--provider-order` /
+`ANI_PY_PROVIDER_ORDER` and is the current live-testing candidate. Kuhi and
+AnimeKai were removed in 0.5.2-rc11 after their upstreams were confirmed dead.
+Mocked adapter tests are not evidence that a deployment is currently live -
+run `scripts/check-providers-live.sh`, which drives the real provider classes.
+If `ani-skip` is missing or errors, `--skip` warns and
 plays without skip flags.
 
 **Secrets Location:** None - no keys, no accounts, no `.env`.

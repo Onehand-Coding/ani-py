@@ -37,9 +37,9 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ns.sub_lang, "de")
 
     def test_provider_defaults_include_live_preflight_backup(self):
-        # Local divergence from upstream: this checkout keeps the default
-        # chain at hianime-only (Kuhi's public instance is undeployed).
-        # Opt in via --provider-order or ANI_PY_PROVIDER_ORDER.
+        # The default chain stays hianime-only: no unverified provider
+        # belongs in the automatic path. Opt in via --provider-order or
+        # ANI_PY_PROVIDER_ORDER.
         parser = ani_py.build_parser()
         with patch.dict(os.environ, {}, clear=True):
             ns = parser.parse_args(["frieren"])
@@ -82,14 +82,13 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ns.provider, "anilight")
 
     def test_default_provider_order_is_hianime_only(self):
-        # No unverified provider belongs in the default automatic chain:
-        # Kuhi's public instance is gone and AnimeKai needs an explicit mirror.
+        # No unverified provider belongs in the default automatic chain.
         parser = ani_py.build_parser()
         ns = parser.parse_args(["frieren"])
         self.assertEqual(ns.provider, "auto")
         self.assertEqual(ns.provider_order, "hianime")
-        ns = parser.parse_args(["--provider-order", "hianime,kuhi", "frieren"])
-        self.assertEqual(ns.provider_order, "hianime,kuhi")
+        ns = parser.parse_args(["--provider-order", "hianime,anilight", "frieren"])
+        self.assertEqual(ns.provider_order, "hianime,anilight")
 
     def test_dash_flag_passthrough_needs_equals_form(self):
         # argparse treats a bare `--flag` value as another option, so the

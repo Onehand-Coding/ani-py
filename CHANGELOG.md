@@ -2,6 +2,18 @@
 
 ## Unreleased (0.5.2-rc11)
 
+- Removed the Kuhi and AnimeKai providers, their tests, and their
+  `ANI_PY_KUHI_URL` / `ANI_PY_ANIMEKAI_URL` overrides after verifying both
+  upstreams are dead on the live network: the Kuhi API returns HTTP 404 on its
+  search and extract endpoints, and AnimeKai has no domain that answers. A
+  provider that cannot resolve still costs failover time and implies a safety
+  net that is not there, so both are gone rather than left disabled. The
+  default `hianime` chain is unchanged. HiAnime and AniLight remain.
+- Rewrote `scripts/check-providers-live.sh` to drive the real provider classes
+  over the network instead of hand-rolled `curl` calls, so it cannot drift from
+  the headers and endpoints the app actually uses. The default provider failing
+  is now fatal (a broken release); an opt-in provider failing only warns.
+
 - Added multi-track soft-subtitle support. HiAnime now preserves every exposed subtitle track instead of discarding all but the default; AnimeKai/Kuhi adapters preserve track lists when their payloads provide them.
 - Added `Change subtitle` to the interactive controller and `--sub-lang` / `ANI_PY_SUB_LANG` for language/label selection. Desktop mpv switches tracks live over IPC; non-mpv/Android paths relaunch playback when needed.
 - Downloads can select a subtitle language/label and save it beside the video with a language-aware filename such as `Episode 1.de.vtt`.
