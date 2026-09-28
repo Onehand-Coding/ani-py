@@ -251,7 +251,7 @@ make build
 
 CI checks Python 3.10, 3.11, 3.12, and 3.13. Automated tests mock external players/downloads and use local HTTP fixtures; real-device/provider acceptance is tracked separately.
 
-See [docs/development.md](docs/development.md) for the release checklist and test/build notes.
+See [docs/development.md](docs/development.md) for the release checklist and test/build notes. If you want to contribute, start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Troubleshooting
 
