@@ -33,8 +33,8 @@ Before a stable release:
 4. VLC desktop playback/subtitles are checked.
 5. Termux VLC and mpv-android playback/subtitles are checked on a real device.
 6. Provider live checks are treated separately from mocked parser tests.
-7. Version, changelog, README claims, and installer behavior agree.
+7. Version, README claims, and installer behavior agree.
 
 ## Project notes
 
-`CONTEXT.md` is maintainer-oriented project memory. `CHANGELOG.md` records release history. Detailed provider and Android behavior lives in the neighboring docs rather than the README.
+`CONTEXT.md` is maintainer-oriented project memory. It records why the project is the way it is, not a history of what changed, and it never accumulates session logs. Change history lives in git. Detailed provider and Android behavior lives in the neighboring docs rather than the README.
