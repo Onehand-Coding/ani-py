@@ -164,25 +164,29 @@ For Android architecture, diagnostics, relay behavior, and limitations, see [doc
 
 ### Android players
 
-| VLC for Android | mpv-android |
-| :---: | :---: |
-| ![VLC playback](docs/screenshots/android/vlc-playback.png) | ![mpv-android playback](docs/screenshots/android/mpv-playback.png) |
+<p align="center">
+  <img src="docs/screenshots/android/vlc-playback.png" alt="VLC for Android playback" width="360">
+  <img src="docs/screenshots/android/vlc-subtitle-track.png" alt="VLC subtitle track selection" width="360">
+</p>
 
-### Subtitles
-
-![VLC subtitle track](docs/screenshots/android/vlc-subtitle-track.png)
+<p align="center">
+  <img src="docs/screenshots/android/mpv-playback.png" alt="mpv-android playback" width="360">
+</p>
 
 ### Recorded device flows
 
-**VLC for Android**
+<p align="center">
+  <a href="docs/clips/android-flow-vlc.mp4">
+    <img src="docs/clips/android-flow-vlc-poster.png" alt="VLC for Android device flow" width="360">
+  </a>
+  <a href="docs/clips/android-flow-mpv.mp4">
+    <img src="docs/clips/android-flow-mpv-poster.png" alt="mpv-android device flow" width="360">
+  </a>
+</p>
 
-[![VLC Android flow](docs/clips/android-flow-vlc-poster.png)](docs/clips/android-flow-vlc.mp4)
-
-**mpv-android**
-
-[![mpv-android flow](docs/clips/android-flow-mpv-poster.png)](docs/clips/android-flow-mpv.mp4)
-
-[Browse all Android screenshots](docs/screenshots/android).
+<p align="center">
+  <a href="docs/screenshots/android">Browse all Android screenshots</a>
+</p>
 
 ## Providers
 
