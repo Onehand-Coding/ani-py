@@ -48,7 +48,7 @@ VERSION = "2026.9.30"
 BASE_URL = "https://hianime.at"
 ANILIGHT_BASE_URL = "https://anilight.live"
 ANILIGHT_API_URL = "https://api.anilight.live/api"
-# Runtime updates are published as immutable GitHub Release assets after the
+# Runtime updates are published as versioned GitHub Release assets after the
 # main-branch test workflow passes. The moving "latest" pointer selects a release,
 # while SHA256SUMS verifies that the downloaded standalone script belongs to it.
 RELEASE_BASE_URL = "https://github.com/Onehand-Coding/ani-py/releases/latest/download"
@@ -3813,7 +3813,7 @@ def run_update(http: Optional[HttpClient] = None, target: Optional[Path] = None)
     # A 200 HTML error page must never overwrite a working install.
     if not remote.startswith(b"#!"):
         print(
-            f"{APP_NAME}: the copy fetched from main does not look like a script; "
+            f"{APP_NAME}: the copy fetched from the latest release does not look like a script; "
             "leaving the installed copy untouched."
         )
         return 1
