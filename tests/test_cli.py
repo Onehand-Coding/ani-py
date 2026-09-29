@@ -184,7 +184,7 @@ class TestUpdateCommand(unittest.TestCase):
             )
 
     def test_older_remote_version_is_refused(self):
-        # A dev checkout ahead of main must not be silently rolled back.
+        # A dev checkout ahead of the latest release must not be silently rolled back.
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(tmp)
             body = "VERSION = '2026.9.28'\n"
@@ -194,7 +194,7 @@ class TestUpdateCommand(unittest.TestCase):
             self.assertIn("older", output)
 
     def test_same_version_different_content_still_updates(self):
-        # A code-only change on main keeps the version string; that must update.
+        # A code-only release can keep the version string; different verified content must update.
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(tmp)
             body = LOCAL_COPY.decode() + "# a later commit\n"
@@ -222,7 +222,7 @@ class TestUpdateCommand(unittest.TestCase):
 
     def test_legacy_install_updates_onto_calendar_version(self):
         # The transition that every currently-installed user hits: their copy
-        # still carries legacy semver, and main is a CalVer date. Must update.
+        # still carries legacy semver, and the release is a CalVer date. Must update.
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(
                 tmp, b"#!/usr/bin/env python3\nVERSION = '0.5.2-rc11'\n"
