@@ -31,6 +31,14 @@ which is not part of `make test`.
 leak provider-specific markup, headers, or endpoints into the app layer.
 `ProviderManager` and `App` must not know which site a stream came from.
 
+**Version user-visible changes.** `VERSION` in `ani_py.py` is a calendar version
+(`YYYY.M.D`) - the date the change landed. Set it to today's date in the same
+commit as any change a user can notice: a feature, a bug fix, a provider
+behavior change, or a CLI surface change. It only ever increases, never moves
+backwards, and carries no suffix or counter. `ani-py --update` compares it
+against `main` and refuses to roll a newer local copy back, so a stale version
+is a real bug. Full rules in `CONTRIBUTING.md` under "Versioning".
+
 **Match the surrounding style.** Existing code uses 4-space indents, plain
 stdlib types (`Optional`, not `X | None`, outside of annotations), and small
 single-purpose helpers. New behavior gets a unittest alongside the code.
@@ -64,6 +72,7 @@ out.
 ## Before you finish
 
 - `make test` passes, all four stages
+- `VERSION` is today's date if the change was user-visible
 - `CONTEXT.md` reflects the change if it touched architecture or conventions
 - New behavior has a test
 - No unrelated reformatting crept in

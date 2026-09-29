@@ -45,6 +45,29 @@ It runs four stages and all of them must pass:
 `make build` regenerates `dist/ani-py`. That file is generated, so never edit it
 by hand.
 
+## Versioning
+
+`VERSION` in `ani_py.py` is a **calendar version** (`YYYY.M.D`) - the date the
+most recent user-visible change landed. `ani-py --version` prints it.
+
+The rules are short:
+
+- **Set it to today's date** in the same commit as any change a user can
+  notice: a feature, a bug fix, a provider behaviour change, or a change to
+  the CLI surface. Documentation-only changes do not need a bump.
+- **It only ever increases.** Never hand-edit it backwards. `ani-py --update`
+  compares it against `main` and refuses to replace a newer local copy with an
+  older one, so a backwards edit is a bug, not a rollback mechanism.
+- **No suffixes and no counters.** Just the date. Several changes on one day
+  share the version; that is expected, and git distinguishes them.
+- **No tags are required.** `install.sh` and `ani-py --update` both serve
+  `main`, so a merge to `main` is what reaches users. Tag a commit only when
+  you want to pin someone to a specific tested build.
+
+Copies installed before 2026-09-29 carry the old `0.5.2-rc11` semver string.
+`--update` still reads it, so those installs upgrade normally. Do not
+reintroduce semver or a prerelease suffix; a test enforces the format.
+
 ## Ground rules
 
 - **Standard library only.** No runtime Python dependencies. New capability

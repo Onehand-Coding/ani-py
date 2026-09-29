@@ -292,6 +292,34 @@ the running mpv instead of restarting playback and losing position.
 and the other desktop players keep their existing plain-detach behaviour,
 because they have no private socket to reconnect to.
 
+### Calendar versioning (2026.9.29)
+**Choice:** `VERSION` is a calendar version (`YYYY.M.D`) - the date the most
+recent user-visible change landed. No suffixes, no counters, no semver. It is
+bumped in the same commit as the change, and the rules live in
+`CONTRIBUTING.md` under "Versioning".
+**Status:** Current
+**Reason:** `install.sh` and `ani-py --update` both serve `main`, so there is no
+release ceremony - a merge *is* the release. Semver demanded a judgment call on
+every single change (patch or minor?), and that call is precisely what produced
+the previous state: `0.5.2-rc11` had been bumped eleven times without one
+release ever being cut, and two user-visible features shipped on a version
+string identical to the build before them. A date cannot be bumped without a
+deliberate decision, cannot be written backwards by accident, and sorts
+correctly with no parser cleverness. `VERSION` is load-bearing rather than
+decorative now: `--update` compares it to decide whether replacing the local
+copy would be a downgrade.
+**Alternatives Considered:** SemVer with bump-per-merge (rejected: the
+patch/minor judgment call is the thing that went wrong before); a build counter
+like `-rc12` (rejected: a counter in semver clothing, carrying the identical
+"which number?" problem, and implying release candidates that never existed);
+`git describe` strings (rejected: the file is fetched raw from `main` with no
+build step, so a commit hash cannot be stamped in at install time).
+**Transition:** Copies installed before this change carry `0.5.2-rc11`.
+`_version_key` therefore reads the leading digits of each dot-separated
+component, so those installs upgrade normally instead of making the guard treat
+them as unparseable and stand down. A regex test pins the CalVer format so
+semver cannot creep back in.
+
 ---
 
 ## 9. Domain Knowledge
@@ -417,6 +445,19 @@ because they have no private socket to reconnect to.
 
 ---
 
+- There is no package manager and **no release tags**. `install.sh` copies
+  `ani_py.py` straight from `main` onto disk, so a merge to `main` *is* the
+  release and an installed copy never changes by itself - which is exactly
+  why provider breakage reaches users only when they re-run the installer.
+  `ani-py -U/--update` fetches `main` and atomically replaces the running
+  file, but it **refuses when main's `VERSION` is older than the local one**,
+  because a build ahead of `main` (a dev checkout, or a version reverted
+  upstream) would otherwise be silently rolled back and stripped of the
+  features it has and `main` does not. Verified live: without the guard,
+  updating a newer local copy did in fact replace it with an older `main`
+  that no longer parsed the flag that performed the update. `install.sh`
+  remains the escape hatch for forcing the `main` copy.
+
 ## 11. Implementation Notes
 
 - `dist/` holds a built artifact; rebuild via `make build`, don't hand-edit.
@@ -537,6 +578,10 @@ plays without skip flags.
 - Multiple provider adapters exist, but the default automatic chain remains HiAnime-only until a backup passes live acceptance.
 - `rofi`/`dmenu` paths exist but are untested here (not installed).
 - Termux playback is live-device verified (97/97 green plus relay Referer/Range/HLS-rewrite probes; owner confirmed VLC/auto playback on-device 2026-09-24).
+- `--update` replaces the script only. It does not re-run the installer's
+  dependency installation (`--deps`) or its Termux prefix detection, and it
+  needs write access to the install directory (it points at `sudo`
+  otherwise). Re-run `install.sh --deps` when external tools are missing.
 
 ---
 

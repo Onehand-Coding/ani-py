@@ -73,6 +73,30 @@ make build
 ./dist/ani-py -V
 ```
 
+### Updating
+
+ani-py installs a copy of itself, so an installed copy never changes on its
+own. Update it with:
+
+```sh
+ani-py --update
+```
+
+This fetches the current `main` copy and replaces the installed script in
+place. To also install external tools, re-run the installer with `--deps`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/install.sh | sh -s -- --deps
+```
+
+`--update` refuses to run when `main` is older than the installed copy, so a
+local build ahead of `main` is never silently rolled back. Re-run
+`install.sh` if you want to force the `main` copy regardless.
+
+The version is a calendar date, so `ani-py --version` reports something like
+`ani-py 2026.9.29` rather than a semver string. That date is what `--update`
+compares to decide whether an update would actually be a downgrade.
+
 ### Uninstall
 
 ```sh
@@ -93,6 +117,7 @@ ani-py -d -e 1-12 "pluto"
 ani-py --skip "summer time rendering"
 ani-py --sub-lang de -d -e 1 "one piece"
 ani-py --attach
+ani-py --update
 ani-py --list-providers
 ```
 

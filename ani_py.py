@@ -15,9 +15,11 @@ from __future__ import annotations
 import argparse
 import base64
 import dataclasses
+import hashlib
 import html
 import http.server
 import json
+import locale
 import os
 import platform
 import re
@@ -39,10 +41,18 @@ from urllib import request as urllib_request
 from urllib.parse import quote, quote_plus, urlencode, urljoin, urlsplit
 
 APP_NAME = "ani-py"
-VERSION = "0.5.2-rc11"
+# Calendar version (CalVer): the date the most recent user-visible change landed.
+# Monotonic by construction and comparable with no release process, which suits a
+# tool installed straight from `main`. Bump it in the same commit as the change -
+# see "Versioning" in CONTRIBUTING.md.
+VERSION = "2026.9.29"
 BASE_URL = "https://hianime.at"
 ANILIGHT_BASE_URL = "https://anilight.live"
 ANILIGHT_API_URL = "https://api.anilight.live/api"
+# The installer copies this script onto disk, so no package manager re-resolves
+# an update later. `--update` pulls the current main-branch copy instead. There
+# are no release tags, so main *is* the release and "newer" means "byte-different".
+UPDATE_URL = "https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/ani_py.py"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -3689,6 +3699,101 @@ class App:
 
 # ---------- CLI ----------
 
+_VERSION_RE = re.compile(r"^VERSION\s*=\s*[\"']([^\"']+)[\"']", re.MULTILINE)
+
+
+def _declared_version(payload: bytes) -> Optional[str]:
+    match = _VERSION_RE.search(payload.decode("utf-8", "replace"))
+    return match.group(1) if match else None
+
+
+def _version_key(version: str) -> Optional[tuple]:
+    """Sortable key for a calendar version, or None if it is not numeric.
+
+    Only the leading digits of each dot-separated component count, so a copy
+    that still carries the legacy `0.5.2-rc11` semver parses as `(0, 5, 2)` and
+    sorts below any CalVer date. That keeps `--update`'s downgrade guard working
+    during the transition instead of disabling itself on every old install.
+    A genuinely unparseable version returns None, and the guard then lets the
+    content comparison decide rather than blocking an update on a bad string.
+    """
+    parts: list[int] = []
+    for component in version.split("."):
+        digits = re.match(r"\d+", component.strip())
+        if not digits:
+            return None
+        parts.append(int(digits.group()))
+    return tuple(parts) or None
+
+
+def run_update(http: Optional[HttpClient] = None, target: Optional[Path] = None) -> int:
+    """Replace this script with the current main-branch copy and exit."""
+    path = target if target is not None else Path(__file__).resolve()
+    if http is None:
+        http = HttpClient()
+    try:
+        body = http.get(UPDATE_URL, timeout=30)
+    except AniPyError as exc:
+        print(f"{APP_NAME}: could not fetch the latest copy: {exc}")
+        return 1
+
+    # run_capture decodes with the locale encoding, so re-encode with that same
+    # codec to recover the bytes exactly as they arrived.
+    remote = body.encode(locale.getpreferredencoding(False))
+    local = path.read_bytes()
+    if remote == local:
+        print(f"{APP_NAME} {VERSION} is up to date with main.")
+        return 0
+
+    # main has no release tags, so "newer" is decided by VERSION rather than
+    # by content. Otherwise a build that is ahead of main (a dev checkout, or
+    # a version reverted upstream) is silently rolled back and loses features.
+    remote_version = _declared_version(remote)
+    local_version = _declared_version(local)
+    remote_key = _version_key(remote_version) if remote_version else None
+    local_key = _version_key(local_version) if local_version else None
+    if remote_key and local_key and remote_key < local_key:
+        print(
+            f"{APP_NAME}: main is older than this copy "
+            f"({remote_version} < {local_version}); leaving {path} untouched. "
+            "Re-run install.sh to force the main-branch copy if that is what you want."
+        )
+        return 1
+
+    # A 200 HTML error page must never overwrite a working install.
+    if not remote.startswith(b"#!"):
+        print(
+            f"{APP_NAME}: the copy fetched from main does not look like a script; "
+            "leaving the installed copy untouched."
+        )
+        return 1
+
+    handle, staged = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".new")
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(remote)
+        os.chmod(staged, 0o755)
+        os.replace(staged, path)
+    except PermissionError:
+        print(
+            f"{APP_NAME}: no permission to write {path}. Try: sudo {APP_NAME} --update"
+        )
+        return 1
+    except OSError as exc:
+        print(f"{APP_NAME}: could not write {path}: {exc}")
+        return 1
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
+
+    digest = hashlib.sha256(remote).hexdigest()[:7]
+    print(
+        f"updated {path} from main "
+        f"({len(local)} -> {len(remote)} bytes, sha {digest})"
+    )
+    print("re-run the installer with --deps if you are missing external tools")
+    return 0
+
 def build_parser() -> argparse.ArgumentParser:
     formatter = argparse.RawDescriptionHelpFormatter
     parser = argparse.ArgumentParser(
@@ -3704,6 +3809,7 @@ def build_parser() -> argparse.ArgumentParser:
               ani-py -c
               ani-py -d -e 1-12 "pluto"
               ani-py --attach
+              ani-py --update
 
             environment:
               ANI_PY_PLAYER          preferred player (mpv, vlc, iina, auto, or executable)
@@ -3766,6 +3872,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.getenv("ANI_PY_ANDROID_DEBUG", "0") == "1",
         help="print Android playback/relay diagnostics to stderr (harmless off Android)",
     )
+    parser.add_argument(
+        "-U",
+        "--update",
+        action="store_true",
+        help="replace this script with the current main-branch copy and exit",
+    )
     parser.add_argument("--_android-relay-config", help=argparse.SUPPRESS)
     parser.add_argument("-V", "--version", action="version", version=f"{APP_NAME} {VERSION}")
     return parser
@@ -3774,6 +3886,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.update:
+        return run_update()
     if args._android_relay_config:
         return run_android_relay(args._android_relay_config)
     try:
