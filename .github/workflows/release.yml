@@ -1,0 +1,67 @@
+name: release
+
+on:
+  workflow_run:
+    workflows: ["test"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+
+      - name: Check whether distributable files changed
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --name-only HEAD^ HEAD | grep -Eq '^(ani_py\.py|install\.sh|uninstall\.sh|scripts/build-standalone\.sh|\.github/workflows/release\.yml)$'; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.changes.outputs.publish == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build release assets
+        if: steps.changes.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/build-standalone.sh
+          cp install.sh uninstall.sh dist/
+          (
+            cd dist
+            sha256sum ani-py install.sh uninstall.sh > SHA256SUMS
+          )
+
+      - name: Publish checksummed release snapshot
+        if: steps.changes.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python - <<'PY'
+          import ani_py
+          print(ani_py.VERSION)
+          PY
+          )
+          short_sha=${TESTED_SHA:0:7}
+          tag="release-${version}-${short_sha}"
+          gh release create "$tag"             dist/ani-py             dist/install.sh             dist/uninstall.sh             dist/SHA256SUMS             --target "$TESTED_SHA"             --title "ani-py ${version} (${short_sha})"             --notes "Automated release snapshot from tested main commit ${TESTED_SHA}."             --latest
