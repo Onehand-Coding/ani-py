@@ -159,22 +159,20 @@ For Android architecture, diagnostics, relay behavior, and limitations, see [doc
 ### Termux workflow
 
 <p align="center">
-  <img src="docs/screenshots/android/termux-episode-picker.png" alt="Episode picker in Termux" width="340">
+  <img src="docs/screenshots/android/termux-episode-picker.png" alt="Episode picker in Termux" width="44%">
   &nbsp;&nbsp;
-  <img src="docs/screenshots/android/termux-playback-controller.png" alt="Playback controller in Termux" width="340">
+  <img src="docs/screenshots/android/termux-playback-controller.png" alt="Playback controller in Termux" width="44%">
 </p>
 
-### Playback on Android
+### Android players
 
 <p align="center">
-  <img src="docs/screenshots/android/vlc-playback-sky.png" alt="VLC for Android playback" width="31%">
+  <img src="docs/screenshots/android/vlc-playback.png" alt="VLC for Android playback" width="48%">
   &nbsp;
-  <img src="docs/screenshots/android/subtitles-rendered.png" alt="Subtitles rendered during Android playback" width="31%">
-  &nbsp;
-  <img src="docs/screenshots/android/mpv-playback.png" alt="mpv-android playback" width="31%">
+  <img src="docs/screenshots/android/mpv-playback.png" alt="mpv-android playback" width="48%">
 </p>
 
-Recorded VLC and mpv-android device flows, diagnostics, and additional screenshots are available in [the Android media gallery](docs/screenshots/android) and [clips directory](docs/clips).
+Recorded device flows are available for [VLC for Android](docs/clips/android-flow-vlc.mp4) and [mpv-android](docs/clips/android-flow-mpv.mp4). Additional screenshots and diagnostics are in [docs/screenshots/android](docs/screenshots/android).
 
 ## Providers
 
