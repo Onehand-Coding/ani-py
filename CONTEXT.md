@@ -298,6 +298,12 @@ because they have no private socket to reconnect to.
 
 - The provider MAL id is the key `ani-skip` input (`-i <mal-id> -e <ep>`).
 - Sub and dub resolve through separate servers/streams.
+- HiAnime lists several servers per episode. `resolve` tries ZokoAnime
+  first and falls through to the others of the same sub/dub type when a
+  server's embed page or HLS host fails (dead CDN, bad TLS cert, changed
+  markup). All servers are assumed to serve the same `window.__P` player
+  payload; one that does not is skipped, not treated as a hard error. If every
+  server fails, the first (ZokoAnime) error is raised with the others named.
 - HLS variant sets differ per episode upstream (one episode may offer
   1080/720/360 while another offers 1080-only); quality selection falls
   back to best available - not an app bug.
