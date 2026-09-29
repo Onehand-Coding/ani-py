@@ -156,40 +156,31 @@ For Android architecture, diagnostics, relay behavior, and limitations, see [doc
 
 ## Real Android usage
 
-### Termux → Android playback
+### Termux
 
-<p align="center">
-  <img src="docs/screenshots/android/termux-episode-picker.png" alt="Episode picker running in Termux" width="32%">
-  <img src="docs/screenshots/android/vlc-playback.png" alt="Anime playback in VLC for Android" width="32%">
-  <img src="docs/screenshots/android/mpv-playback.png" alt="Anime playback in mpv-android" width="32%">
-</p>
+![Episode picker in Termux](docs/screenshots/android/termux-episode-picker.png)
 
-<p align="center">
-  <sub>Pick an episode in Termux, then hand playback off to VLC for Android or mpv-android.</sub>
-</p>
+### Android players
+
+| VLC for Android | mpv-android |
+| :---: | :---: |
+| ![VLC playback](docs/screenshots/android/vlc-playback.png) | ![mpv-android playback](docs/screenshots/android/mpv-playback.png) |
 
 ### Subtitles
 
-<p align="center">
-  <img src="docs/screenshots/android/vlc-subtitle-track.png" alt="Subtitle track selection in VLC for Android" width="45%">
-</p>
+![VLC subtitle track](docs/screenshots/android/vlc-subtitle-track.png)
 
 ### Recorded device flows
 
-<p align="center">
-  <a href="docs/clips/android-flow-vlc.mp4">
-    <img src="docs/clips/android-flow-vlc-poster.png" alt="Watch the VLC for Android device flow" width="45%">
-  </a>
-  <a href="docs/clips/android-flow-mpv.mp4">
-    <img src="docs/clips/android-flow-mpv-poster.png" alt="Watch the mpv-android device flow" width="45%">
-  </a>
-</p>
+**VLC for Android**
 
-<p align="center">
-  <sub>Click either preview to watch the recorded device flow.</sub>
-</p>
+[![VLC Android flow](docs/clips/android-flow-vlc-poster.png)](docs/clips/android-flow-vlc.mp4)
 
-More screenshots are available in [docs/screenshots/android](docs/screenshots/android).
+**mpv-android**
+
+[![mpv-android flow](docs/clips/android-flow-mpv-poster.png)](docs/clips/android-flow-mpv.mp4)
+
+[Browse all Android screenshots](docs/screenshots/android).
 
 ## Providers
 
