@@ -56,13 +56,15 @@ The rules are short:
   notice: a feature, a bug fix, a provider behaviour change, or a change to
   the CLI surface. Documentation-only changes do not need a bump.
 - **It only ever increases.** Never hand-edit it backwards. `ani-py --update`
-  compares it against `main` and refuses to replace a newer local copy with an
-  older one, so a backwards edit is a bug, not a rollback mechanism.
+  compares it against the latest checksummed release and refuses to replace a
+  newer local copy with an older one, so a backwards edit is a bug, not a
+  rollback mechanism.
 - **No suffixes and no counters.** Just the date. Several changes on one day
   share the version; that is expected, and git distinguishes them.
-- **No tags are required.** `install.sh` and `ani-py --update` both serve
-  `main`, so a merge to `main` is what reaches users. Tag a commit only when
-  you want to pin someone to a specific tested build.
+- **Release tags are automated.** A successful `test` workflow on `main`
+  publishes a unique `release-<VERSION>-<short-sha>` snapshot when
+  distributable files changed. Contributors do not create or bump release tags
+  manually.
 
 Copies installed before 2026-09-29 carry the old `0.5.2-rc11` semver string.
 `--update` still reads it, so those installs upgrade normally. Do not
