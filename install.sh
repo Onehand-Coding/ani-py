@@ -2,7 +2,7 @@
 set -eu
 
 REPO="${ANI_PY_REPO:-Onehand-Coding/ani-py}"
-REF="${ANI_PY_REF:-main}"
+REF="${ANI_PY_REF:-}"
 WITH_DEPS=0
 PREFIX_OVERRIDE=""
 
@@ -36,7 +36,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 is_termux=0
-if [ -n "${TERMUX_VERSION:-}" ] || [ -n "${PREFIX:-}" ] && [ -d "${PREFIX:-}/etc/termux" ]; then
+if [ -n "${TERMUX_VERSION:-}" ] || { [ -n "${PREFIX:-}" ] && [ -d "${PREFIX:-}/etc/termux" ]; }; then
   is_termux=1
 fi
 
@@ -50,11 +50,19 @@ fi
 
 bindir="$install_prefix/bin"
 target="$bindir/ani-py"
-url="https://raw.githubusercontent.com/$REPO/$REF/ani_py.py"
+if [ -n "$REF" ]; then
+  url="https://raw.githubusercontent.com/$REPO/$REF/ani_py.py"
+  checksum_url=""
+  echo "warning: ANI_PY_REF bypasses release checksum verification for development installs" >&2
+else
+  release_base="https://github.com/$REPO/releases/latest/download"
+  url="$release_base/ani-py"
+  checksum_url="$release_base/SHA256SUMS"
+fi
 
 need_root() {
   case "$1" in
-    /usr/*|/opt/*) return 0 ;;
+    /usr|/usr/*|/opt|/opt/*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -104,16 +112,52 @@ if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; 
   echo "warning: Python is not currently on PATH; ani-py requires Python 3.10+" >&2
 fi
 
-tmp="${TMPDIR:-/tmp}/ani-py-install.$$"
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/ani-py-install.XXXXXX")
+tmp="$tmp_dir/ani-py"
+checksums="$tmp_dir/SHA256SUMS"
+trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$url" -o "$tmp"
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "$tmp" "$url"
-else
-  echo "error: curl or wget is required to download ani-py" >&2
-  exit 1
+download() {
+  source_url=$1
+  destination=$2
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$source_url" -o "$destination"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$destination" "$source_url"
+  else
+    echo "error: curl or wget is required to download ani-py" >&2
+    exit 1
+  fi
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+  elif command -v python >/dev/null 2>&1; then
+    python -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+  else
+    echo "error: sha256sum, shasum, or Python is required to verify ani-py" >&2
+    exit 1
+  fi
+}
+
+download "$url" "$tmp"
+if [ -n "$checksum_url" ]; then
+  download "$checksum_url" "$checksums"
+  expected=$(awk '$2 == "ani-py" || $2 == "*ani-py" { print $1; exit }' "$checksums")
+  case "$expected" in
+    [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]*) ;;
+    *) echo "error: release checksum file has no ani-py entry" >&2; exit 1 ;;
+  esac
+  actual=$(sha256_file "$tmp")
+  if [ "$actual" != "$expected" ]; then
+    echo "error: ani-py release checksum verification failed" >&2
+    exit 1
+  fi
 fi
 
 first_line=$(head -n 1 "$tmp" 2>/dev/null || true)
