@@ -349,6 +349,20 @@ because they have no private socket to reconnect to.
   one stream. `data-mediaid` is the series id and is equally wrong here.
   When a provider "works" but plays the wrong content, identify the media
   from its subtitle text - durations and filenames look entirely normal.
+- The `type` parameter on `stream/getSources` is ignored: the `id` alone
+  selects the stream, because `data-id` already encodes the mode (the same
+  `data-id` requested with `type=sub` and `type=dub` returns identical
+  media). ani-py still sends `type` for fidelity with the real client.
+- Dub works and is owner-verified on-device (2026-09-29), with two caveats
+  worth knowing. The dub master is a materially worse encode than the sub
+  - `1440x1080` at 23.976 fps and ~1.2 Mbps against the sub's
+  `1920x1080` - so it appears to be an older print rather than a modern
+  dub. And the `tracks` array is **not mode-aware**: a dub request returns
+  the *sub* media's English subtitle, so playing dub attaches a subtitle
+  that does not match the dubbed dialogue. Turning subtitles off in mpv is
+  the accepted workaround. Fixing it properly would mean discarding
+  `tracks` for dub or resolving it per mode, and neither is done - do not
+  "fix" the mismatch by trusting the dub track, it is the sub's file.
 - Do not repeat the earlier wrong conclusion that the m3u8 playlists and
   every segment were encrypted and that a local decrypting proxy was
   required. That reading came from the client's own proxy fallback path,
