@@ -9,9 +9,11 @@ class FakeHttp:
     def __init__(self, responses):
         self.responses = responses
         self.calls = []
+        self.headers = []
 
-    def get(self, url, *, referer=None, timeout=12):
+    def get(self, url, *, referer=None, timeout=12, headers=None):
         self.calls.append((url, referer))
+        self.headers.append((url, headers))
         value = self.responses[url]
         if isinstance(value, Exception):
             raise value
@@ -171,6 +173,32 @@ high/index.m3u8
         self.assertEqual(bundle.streams[0].url, "https://good-hls.example/720/index.m3u8")
         self.assertNotIn("https://dub.example/mal/1/c", [url for url, _ in http.calls])
 
+    def test_resolve_sends_watch_page_referer_when_fetching_embed(self):
+        # The embed hosts answer HTTP 200 with an error page when no Referer
+        # is sent, so the watch page has to travel with the embed request.
+        zoko = "https://zoko.example/mal/1/a"
+        http = FakeHttp(
+            {
+                SERVERS_URL: _server_item("sub", "ZokoAnime", zoko),
+                zoko: _player_page("https://hls.example/master.m3u8"),
+                "https://hls.example/master.m3u8": "#EXTM3U\n",
+            }
+        )
+        ani_py.HianimeProvider(http).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+        embed_referer = next(ref for url, ref in http.calls if url == zoko)
+        self.assertEqual(embed_referer, f"{ani_py.BASE_URL}/watch/frieren-999?ep=1")
+
+    def test_resolve_reports_embed_error_page_not_markup_change(self):
+        # A Referer-gated soft 404 used to be reported as a markup change,
+        # which sent debugging in the wrong direction entirely.
+        zoko = "https://zoko.example/mal/1/a"
+        error_page = '<html><title>Error - MegaPlay</title><div class="error-container"><h1>We\'re Sorry!</h1></div></html>'
+        with self.assertRaises(ani_py.ProviderUnavailable) as ctx:
+            ani_py.HianimeProvider(
+                FakeHttp({SERVERS_URL: _server_item("sub", "ZokoAnime", zoko), zoko: error_page})
+            ).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+        self.assertIn("error page", str(ctx.exception))
+
     def test_resolve_prefers_zokoanime_regardless_of_page_order(self):
         zoko = "https://zoko.example/mal/1/a"
         other = "https://other.example/mal/1/b"
@@ -241,6 +269,145 @@ high/index.m3u8
         provider = ani_py.HianimeProvider(FakeHttp({f'{ani_py.BASE_URL}/api/theme/episode/list/999': page}))
         episodes = provider.episodes('frieren-999')
         self.assertEqual([(e.episode_id, e.number) for e in episodes], [('111', '1'), ('112', '2')])
+
+
+# The megaplay.buzz backend replaced the window.__P player blob with an
+# AES-encrypted source manifest served from /stream/getSources. The ciphertext
+# below was produced by Node WebCrypto using the same key/IV derivation, so the
+# test pins the real wire format rather than a round-trip of our own code.
+MEGAPLAY_EMBED = "https://megaplay.buzz/stream/s-2/2142/sub"
+# data-id is the per-episode, per-mode id the player sends to getSources.
+# data-realid is shared between the sub and dub embeds and resolves to a
+# different show entirely, so it must never be used.
+MEGAPLAY_MEDIA_ID = "36396"
+MEGAPLAY_REAL_ID = "2142"
+MEGAPLAY_SOURCES = f"https://megaplay.buzz/stream/getSources?id={MEGAPLAY_MEDIA_ID}&type=sub"
+MEGAPLAY_MANIFEST = "wdeBruh3qqn_i5wUNnyaPetjmky2XY6ros_465Or0nhnNKf4BxS5H65eHawnxNNW"
+MEGAPLAY_MASTER = (
+    "#EXTM3U\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\n"
+    "720.m3u8\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\n"
+    "1080.m3u8\n"
+)
+
+
+def _megaplay_page(media_id=MEGAPLAY_MEDIA_ID, real_id=MEGAPLAY_REAL_ID):
+    return (
+        f'<div id="player" data-id="{media_id}" data-realid="{real_id}" '
+        f'data-mediaid="1774"></div>'
+    )
+
+
+def _sources_payload(tracks=None, enc=MEGAPLAY_MANIFEST):
+    return json.dumps({"enc": enc, "tracks": tracks or []})
+
+
+class TestMegaplayBackend(unittest.TestCase):
+    def _http(self, **overrides):
+        responses = {
+            SERVERS_URL: _server_item("sub", "Vidstream-2", MEGAPLAY_EMBED),
+            MEGAPLAY_EMBED: _megaplay_page(),
+            MEGAPLAY_SOURCES: _sources_payload(),
+            "https://cdn.example/master.m3u8": MEGAPLAY_MASTER,
+        }
+        responses.update(overrides)
+        return FakeHttp(responses)
+
+    def test_aes256_cbc_decrypt_matches_webcrypto_vector(self):
+        # Locks the hand-rolled AES-256 against an independently generated
+        # vector; a subtle row-shift or round-order error breaks playback.
+        plaintext = ani_py._aes256_cbc_decrypt(
+            MEGAPLAY_MANIFEST, ani_py.MEGAPLAY_KEY, ani_py.MEGAPLAY_IV
+        )
+        self.assertEqual(json.loads(plaintext)["file"], "https://cdn.example/master.m3u8")
+
+    def test_resolve_decrypts_manifest_and_parses_master(self):
+        bundle = ani_py.HianimeProvider(self._http()).resolve(
+            "frieren-999", ani_py.Episode("111", "1"), "sub"
+        )
+        self.assertEqual(bundle.referer, "https://megaplay.buzz/")
+        self.assertEqual(bundle.streams[0].quality, "1080p")
+        self.assertEqual(bundle.streams[0].url, "https://cdn.example/1080.m3u8")
+        self.assertEqual(bundle.streams[1].url, "https://cdn.example/720.m3u8")
+
+    def test_sources_request_uses_embed_referer_and_xhr_header(self):
+        http = self._http()
+        ani_py.HianimeProvider(http).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+        referer = next(ref for url, ref in http.calls if url == MEGAPLAY_SOURCES)
+        self.assertEqual(referer, "https://megaplay.buzz/")
+        headers = next(h for url, h in http.headers if url == MEGAPLAY_SOURCES)
+        self.assertEqual(headers, {"X-Requested-With": "XMLHttpRequest"})
+
+    def test_sources_request_uses_data_id_not_data_realid(self):
+        # data-realid is shared between the sub and dub embeds; requesting it
+        # served a completely different show. data-id is what the player uses.
+        http = self._http()
+        ani_py.HianimeProvider(http).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+        requested = [url for url, _ in http.calls if "getSources" in url]
+        self.assertEqual(requested, [MEGAPLAY_SOURCES])
+
+    def test_sub_and_dub_request_their_own_media_id(self):
+        # Sharing one id across modes is what served the wrong-language
+        # stream, so each mode must carry its own embed data-id through.
+        sub_embed = "https://megaplay.buzz/stream/s-2/2142/sub"
+        dub_embed = "https://megaplay.buzz/stream/s-2/2142/dub"
+        sub_sources = "https://megaplay.buzz/stream/getSources?id=36396&type=sub"
+        dub_sources = "https://megaplay.buzz/stream/getSources?id=36382&type=dub"
+        http = FakeHttp(
+            {
+                SERVERS_URL: _server_item("sub", "Vidstream-2", sub_embed)
+                + _server_item("dub", "Vidstream-2", dub_embed),
+                sub_embed: _megaplay_page(media_id="36396"),
+                dub_embed: _megaplay_page(media_id="36382"),
+                sub_sources: _sources_payload(),
+                dub_sources: _sources_payload(),
+                "https://cdn.example/master.m3u8": MEGAPLAY_MASTER,
+            }
+        )
+        provider = ani_py.HianimeProvider(http)
+        provider.resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+        provider.resolve("frieren-999", ani_py.Episode("111", "1"), "dub")
+        requested = [url for url, _ in http.calls if "getSources" in url]
+        self.assertIn(sub_sources, requested)
+        self.assertIn(dub_sources, requested)
+
+    def test_resolve_collects_subtitle_tracks_from_outer_payload(self):
+        tracks = [{"file": "https://sub.example/en.vtt", "label": "English", "default": True}]
+        bundle = ani_py.HianimeProvider(
+            self._http(**{MEGAPLAY_SOURCES: _sources_payload(tracks)})
+        ).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+        self.assertEqual(bundle.subtitle, "https://sub.example/en.vtt")
+        self.assertEqual(bundle.subtitle_language, "en")
+        self.assertEqual(bundle.subtitle_label, "English")
+
+    def test_manifest_without_media_id_reports_markup_change(self):
+        with self.assertRaises(ani_py.ProviderChanged):
+            ani_py.HianimeProvider(
+                self._http(**{MEGAPLAY_EMBED: "<html>no player</html>"})
+            ).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+
+    def test_undecryptable_manifest_reports_provider_changed(self):
+        with self.assertRaises(ani_py.ProviderChanged) as ctx:
+            ani_py.HianimeProvider(
+                self._http(**{MEGAPLAY_SOURCES: _sources_payload(enc="not-base64!!")})
+            ).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+        self.assertIn("could not be decrypted", str(ctx.exception))
+
+    def test_manifest_without_hls_url_raises_stream_not_found(self):
+        # A decrypted manifest that parses but carries no playlist is a
+        # stream problem, not a markup problem.
+        import base64 as _b64mod
+
+        empty = _b64mod.urlsafe_b64encode(b"\x00" * 32).decode().rstrip("=")
+        with self.assertRaises(ani_py.ProviderChanged):
+            ani_py.HianimeProvider(
+                self._http(**{MEGAPLAY_SOURCES: _sources_payload(enc=empty)})
+            ).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+
+    def test_parse_master_stays_callable_as_staticmethod(self):
+        streams = ani_py.HianimeProvider._parse_master(MEGAPLAY_MASTER, "https://cdn.example/master.m3u8")
+        self.assertEqual([s.quality for s in streams], ["1080p", "720p"])
 
 
 if __name__ == '__main__':

@@ -436,6 +436,137 @@ def _normalize_title(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+# ---------- AES-256-CBC decryption (stdlib only) ----------
+#
+# HiAnime's current embed backend ships the HLS URL inside a single
+# AES-256-CBC blob. The key and IV are constants in the site's own player
+# script, so the cipher is fully specified and only decryption is needed.
+# Written out here because the standard library has no AES.
+
+
+def _gmul(a: int, b: int) -> int:
+    """Multiply two bytes in GF(2^8) modulo the AES polynomial."""
+    result = 0
+    for _ in range(8):
+        if b & 1:
+            result ^= a
+        b >>= 1
+        a = ((a << 1) ^ (0x1B if a & 0x80 else 0)) & 0xFF
+    return result
+
+
+def _build_sbox() -> list[int]:
+    """Generate the AES S-box: multiplicative inverse plus affine transform."""
+    sbox = [0] * 256
+    p = q = 1
+    while True:
+        p = p ^ ((p << 1) & 0xFF) ^ (0x1B if p & 0x80 else 0)
+        q ^= (q << 1) & 0xFF
+        q ^= (q << 2) & 0xFF
+        q ^= (q << 4) & 0xFF
+        if q & 0x80:
+            q ^= 0x09
+        value = q
+        for shift in (1, 2, 3, 4):
+            value ^= ((q << shift) | (q >> (8 - shift))) & 0xFF
+        sbox[p] = value ^ 0x63
+        if p == 1:
+            break
+    sbox[0] = 0x63
+    return sbox
+
+
+_AES_SBOX = _build_sbox()
+_AES_INV_SBOX = [0] * 256
+for _index, _value in enumerate(_AES_SBOX):
+    _AES_INV_SBOX[_value] = _index
+
+
+def _aes256_key_schedule(key: bytes) -> tuple[list[list[int]], int]:
+    words = [list(key[4 * i:4 * i + 4]) for i in range(8)]
+    rcon = 1
+    for i in range(8, 4 * (14 + 1)):
+        temp = list(words[i - 1])
+        if i % 8 == 0:
+            temp = temp[1:] + temp[:1]
+            temp = [_AES_SBOX[b] for b in temp]
+            temp[0] ^= rcon
+            rcon = _gmul(rcon, 2)
+        elif i % 8 == 4:
+            temp = [_AES_SBOX[b] for b in temp]
+        words.append([words[i - 8][j] ^ temp[j] for j in range(4)])
+    return words, 14
+
+
+def _add_round_key(state: list[int], words: list[list[int]], rnd: int) -> None:
+    for i in range(16):
+        state[i] ^= words[rnd * 4 + i // 4][i % 4]
+
+
+def _inv_shift_rows(state: list[int]) -> list[int]:
+    # Row r of the AES state is strided by 4 in this flat (r + 4c) layout, so
+    # the inverse of a visual right-shift by r reads as an index shift of -r.
+    out = [0] * 16
+    for r in range(4):
+        for c in range(4):
+            out[r + 4 * c] = state[r + 4 * ((c - r) % 4)]
+    return out
+
+
+def _inv_mix_columns(state: list[int]) -> list[int]:
+    out = [0] * 16
+    for c in range(4):
+        a0, a1, a2, a3 = (state[r + 4 * c] for r in range(4))
+        out[0 + 4 * c] = _gmul(a0, 14) ^ _gmul(a1, 11) ^ _gmul(a2, 13) ^ _gmul(a3, 9)
+        out[1 + 4 * c] = _gmul(a0, 9) ^ _gmul(a1, 14) ^ _gmul(a2, 11) ^ _gmul(a3, 13)
+        out[2 + 4 * c] = _gmul(a0, 13) ^ _gmul(a1, 9) ^ _gmul(a2, 14) ^ _gmul(a3, 11)
+        out[3 + 4 * c] = _gmul(a0, 11) ^ _gmul(a1, 13) ^ _gmul(a2, 9) ^ _gmul(a3, 14)
+    return out
+
+
+def _aes256_decrypt_block(block: bytes, words: list[list[int]], rounds: int) -> bytes:
+    # Inverse cipher: the last round key comes off first, then each round
+    # undoes MixColumns/ShiftRows/SubBytes in the reverse of the order the
+    # forward cipher applied them.
+    state = list(block)
+    _add_round_key(state, words, rounds)
+    state = _inv_shift_rows(state)
+    state = [_AES_INV_SBOX[b] for b in state]
+    for rnd in range(rounds - 1, 0, -1):
+        _add_round_key(state, words, rnd)
+        state = _inv_mix_columns(state)
+        state = _inv_shift_rows(state)
+        state = [_AES_INV_SBOX[b] for b in state]
+    _add_round_key(state, words, 0)
+    return bytes(state)
+
+
+# Seed and IV the megaplay.buzz player uses for its source manifest.
+MEGAPLAY_KEY = b"i?LMTAx0Q6,:}50U"
+MEGAPLAY_IV = b"W0;27ToaUpl_P%'c"
+
+
+def _aes256_cbc_decrypt(blob: str, key: bytes, iv: bytes) -> bytes:
+    """Decrypt a base64url AES-256-CBC blob with the given 32-byte key and 16-byte IV."""
+    if len(key) > 32:
+        raise ValueError("AES-256 key must be at most 32 bytes")
+    padded = key + b"\x00" * (32 - len(key))
+    words, rounds = _aes256_key_schedule(padded)
+    previous = (iv + b"\x00" * 16)[:16]
+    raw = base64.urlsafe_b64decode(blob + "=" * (-len(blob) % 4))
+    out = bytearray()
+    for start in range(0, len(raw) - 15, 16):
+        block = raw[start:start + 16]
+        plain = _aes256_decrypt_block(block, words, rounds)
+        out += bytes(a ^ b for a, b in zip(plain, previous))
+        previous = block
+    if out:
+        pad = out[-1]
+        if 1 <= pad <= 16:
+            out = out[:-pad]
+    return bytes(out)
+
+
 # ---------- HiAnime provider ----------
 
 class HianimeProvider(Provider):
@@ -618,6 +749,60 @@ class HianimeProvider(Provider):
     def _pick_subtitle(payload: object) -> Optional[str]:
         return HianimeProvider._pick_subtitle_info(payload)[0]
 
+    def _resolve_megaplay(
+        self, embed_page: str, referer: str, mode: str, mal_id: Optional[str]
+    ) -> StreamBundle:
+        """Resolve the megaplay.buzz backend, which serves an AES-encrypted
+        source manifest from /stream/getSources instead of a window.__P blob."""
+        # data-id is the per-episode, per-mode identifier the player sends to
+        # getSources. data-realid is NOT equivalent: it is shared between the
+        # sub and dub embeds, and asking for it returns a different show.
+        id_match = re.search(r'data-id="(\d+)"', embed_page)
+        if not id_match:
+            raise ProviderChanged("HiAnime player markup changed; no media id was present.")
+        media_id = id_match.group(1)
+        try:
+            payload = self.http.get(
+                f"{referer}stream/getSources?id={media_id}&type={mode}",
+                referer=referer,
+                headers={"X-Requested-With": "XMLHttpRequest"},
+            )
+        except HttpError as exc:
+            raise ProviderUnavailable(f"HiAnime source manifest failed: {exc}") from exc
+        try:
+            sources = json.loads(payload)
+            enc = sources["enc"]
+            if not isinstance(enc, str):
+                raise TypeError("enc is not a string")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ProviderChanged(f"HiAnime source manifest is malformed: {exc}") from exc
+        try:
+            manifest = json.loads(_aes256_cbc_decrypt(enc, MEGAPLAY_KEY, MEGAPLAY_IV))
+        except (ValueError, TypeError) as exc:
+            raise ProviderChanged(f"HiAnime source manifest could not be decrypted: {exc}") from exc
+        master_url = manifest.get("file") if isinstance(manifest, dict) else None
+        if not isinstance(master_url, str) or ".m3u8" not in master_url:
+            raise StreamNotFound("HiAnime source manifest contained no HLS playlist.")
+        tracks = self._subtitle_tracks({"subtitles": sources.get("tracks")})
+        default_track = self._default_subtitle(tracks)
+        try:
+            master = self.http.get(master_url, referer=referer)
+        except HttpError as exc:
+            raise ProviderUnavailable(f"HiAnime HLS host failed: {exc}") from exc
+        streams = self._parse_master(master, master_url)
+        if not streams:
+            streams = [Stream(quality="auto", url=master_url)]
+        return StreamBundle(
+            streams=streams,
+            subtitle=default_track.url if default_track else None,
+            referer=referer,
+            mal_id=mal_id,
+            provider=self.name,
+            subtitle_language=default_track.language if default_track else None,
+            subtitle_label=default_track.label if default_track else None,
+            subtitles=tracks,
+        )
+
     @staticmethod
     def _parse_master(master: str, master_url: str) -> list[Stream]:
         lines = [line.strip() for line in master.splitlines() if line.strip()]
@@ -654,12 +839,16 @@ class HianimeProvider(Provider):
         if not embeds:
             raise StreamNotFound(f"HiAnime has no {mode} source for episode {episode.number}.")
 
+        # The embed hosts gate on Referer and answer HTTP 200 with their own
+        # error page when it is missing, so the watch page is sent as one.
+        watch_referer = f"{BASE_URL}/watch/{anime_slug}?ep={episode.number}"
+
         # ZokoAnime is tried first; if its embed or HLS host is broken, fall
         # through to the other servers HiAnime lists for the same episode.
         failures: list[tuple[str, ProviderError]] = []
         for index, (server_name, embed_url) in enumerate(embeds):
             try:
-                return self._resolve_embed(embed_url)
+                return self._resolve_embed(embed_url, mode, watch_referer)
             except ProviderError as exc:
                 failures.append((server_name, exc))
                 if index + 1 < len(embeds):
@@ -691,18 +880,22 @@ class HianimeProvider(Provider):
         found.sort(key=lambda item: item[0].lower() != "zokoanime")
         return found
 
-    def _resolve_embed(self, embed_url: str) -> StreamBundle:
+    def _resolve_embed(self, embed_url: str, mode: str, page_referer: Optional[str] = None) -> StreamBundle:
         parts = urlsplit(embed_url)
         referer = f"{parts.scheme}://{parts.netloc}/"
         mal_match = re.search(r"/mal/(\d+)/", embed_url)
         mal_id = mal_match.group(1) if mal_match else None
         try:
-            embed_page = self.http.get(embed_url)
+            embed_page = self.http.get(embed_url, referer=page_referer or referer)
         except HttpError as exc:
             raise ProviderUnavailable(f"HiAnime embed host failed: {exc}") from exc
+        if 'class="error-container"' in embed_page:
+            raise ProviderUnavailable(
+                f"HiAnime embed host {parts.netloc} served its error page instead of a player"
+            )
         blob_match = re.search(r'window\.__P\s*=\s*"([^"]+)"', embed_page)
         if not blob_match:
-            raise ProviderChanged("HiAnime player payload was not found; provider markup may have changed.")
+            return self._resolve_megaplay(embed_page, referer, mode, mal_id)
         try:
             payload = self._deobfuscate(blob_match.group(1))
         except ValueError as exc:
@@ -2429,6 +2622,10 @@ class Playback:
             "--vid=auto",
             f"--referrer={referer}",
             f"--force-media-title={title}",
+            # Some HLS hosts serve MPEG-TS segments under decoy extensions
+            # (.jpg, .html, ...); ffmpeg's hls demuxer rejects those unless its
+            # extension allowlist is widened, and only the demuxer option works.
+            "--demuxer-lavf-o=allowed_extensions=ALL",
         ]
         if subtitle:
             cmd.append(f"--sub-file={subtitle}")
