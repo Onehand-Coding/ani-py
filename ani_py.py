@@ -19,7 +19,6 @@ import hashlib
 import html
 import http.server
 import json
-import locale
 import os
 import platform
 import re
@@ -45,14 +44,16 @@ APP_NAME = "ani-py"
 # Monotonic by construction and comparable with no release process, which suits a
 # tool installed straight from `main`. Bump it in the same commit as the change -
 # see "Versioning" in CONTRIBUTING.md.
-VERSION = "2026.9.29"
+VERSION = "2026.9.30"
 BASE_URL = "https://hianime.at"
 ANILIGHT_BASE_URL = "https://anilight.live"
 ANILIGHT_API_URL = "https://api.anilight.live/api"
-# The installer copies this script onto disk, so no package manager re-resolves
-# an update later. `--update` pulls the current main-branch copy instead. There
-# are no release tags, so main *is* the release and "newer" means "byte-different".
-UPDATE_URL = "https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/ani_py.py"
+# Runtime updates are published as immutable GitHub Release assets after the
+# main-branch test workflow passes. The moving "latest" pointer selects a release,
+# while SHA256SUMS verifies that the downloaded standalone script belongs to it.
+RELEASE_BASE_URL = "https://github.com/Onehand-Coding/ani-py/releases/latest/download"
+UPDATE_URL = f"{RELEASE_BASE_URL}/ani-py"
+UPDATE_CHECKSUM_URL = f"{RELEASE_BASE_URL}/SHA256SUMS"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -405,6 +406,23 @@ class HttpClient:
         return self.request(
             "GET", url, referer=referer, headers=headers, timeout=timeout, cookie_jar=cookie_jar
         )
+
+    def get_bytes(self, url: str, *, timeout: int = 30) -> bytes:
+        """Fetch a binary payload without locale decoding or newline translation."""
+        cmd = [
+            self.exe,
+            "-fsSL",
+            "--max-time",
+            str(timeout),
+            "-A",
+            USER_AGENT,
+            url,
+        ]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", "replace").strip() or f"curl exit {proc.returncode}"
+            raise HttpError(f"Network request failed for {url}: {detail}")
+        return proc.stdout
 
     def get_json(self, url: str, **kwargs: object) -> object:
         body = self.get(url, **kwargs)
@@ -1664,6 +1682,7 @@ class _AndroidRelayHTTPServer(http.server.ThreadingHTTPServer):
         subtitle_target: Optional[str] = None,
         subtitle_language: Optional[str] = None,
         subtitle_label: Optional[str] = None,
+        allowed_targets: Optional[Iterable[str]] = None,
     ) -> None:
         super().__init__(address, handler)
         self.token = token
@@ -1674,13 +1693,23 @@ class _AndroidRelayHTTPServer(http.server.ThreadingHTTPServer):
         self.subtitle_target = subtitle_target
         self.subtitle_language = subtitle_language
         self.subtitle_label = subtitle_label
+        self.allowed_targets = set(allowed_targets) if allowed_targets is not None else None
         self.last_activity = time.monotonic()
 
+    def _allow_target(self, target: str) -> None:
+        if self.allowed_targets is not None:
+            self.allowed_targets.add(target)
+
+    def target_allowed(self, target: str) -> bool:
+        return self.allowed_targets is None or target in self.allowed_targets
+
     def relay_url(self, target: str) -> str:
+        self._allow_target(target)
         host, port = self.server_address[:2]
         return f"http://127.0.0.1:{port}/{self.token}/{_relay_encode(target)}"
 
     def subtitle_relay_url(self, target: str) -> str:
+        self._allow_target(target)
         host, port = self.server_address[:2]
         suffix = _subtitle_suffix_for(target)
         return f"http://127.0.0.1:{port}/{self.token}/subtitle/{_relay_encode(target)}{suffix}"
@@ -1756,6 +1785,8 @@ class _AndroidRelayHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             return None
         if urlsplit(target).scheme not in {"http", "https"}:
+            return None
+        if not self.relay.target_allowed(target):
             return None
         return target, kind, suffix, duration
 
@@ -1971,6 +2002,7 @@ def run_android_relay(config_path: str) -> int:
     if not token or not str(ready):
         return 2
     referer = str(config.get("referer") or "")
+    initial_target = str(config.get("initial_target") or "") or None
     subtitle_target = str(config.get("subtitle_target") or "") or None
     subtitle_language = str(config.get("subtitle_language") or "") or None
     subtitle_label = str(config.get("subtitle_label") or "") or None
@@ -1987,6 +2019,7 @@ def run_android_relay(config_path: str) -> int:
         subtitle_target=subtitle_target,
         subtitle_language=subtitle_language,
         subtitle_label=subtitle_label,
+        allowed_targets=[target for target in (initial_target, subtitle_target) if target],
     )
 
     def request_shutdown(_signum: int, _frame: object) -> None:
@@ -2201,6 +2234,7 @@ class Playback:
     def _start_android_relay(
         self,
         referer: str,
+        initial_target: str,
         subtitle: Optional[str] = None,
         subtitle_language: Optional[str] = None,
         subtitle_label: Optional[str] = None,
@@ -2224,6 +2258,7 @@ class Playback:
             "ready": str(ready),
             "token": token,
             "referer": referer,
+            "initial_target": initial_target,
             "subtitle_target": subtitle,
             "subtitle_language": subtitle_language,
             "subtitle_label": subtitle_label,
@@ -2339,6 +2374,7 @@ class Playback:
         relay = (
             self._start_android_relay(
                 referer,
+                stream.url,
                 subtitle,
                 subtitle_language=subtitle_language,
                 subtitle_label=subtitle_label,
@@ -3727,36 +3763,50 @@ def _version_key(version: str) -> Optional[tuple]:
 
 
 def run_update(http: Optional[HttpClient] = None, target: Optional[Path] = None) -> int:
-    """Replace this script with the current main-branch copy and exit."""
+    """Replace this script with the latest checksummed release asset and exit."""
     path = target if target is not None else Path(__file__).resolve()
     if http is None:
         http = HttpClient()
     try:
-        body = http.get(UPDATE_URL, timeout=30)
+        remote = http.get_bytes(UPDATE_URL, timeout=30)
+        checksums = http.get(UPDATE_CHECKSUM_URL, timeout=30)
     except AniPyError as exc:
-        print(f"{APP_NAME}: could not fetch the latest copy: {exc}")
+        print(f"{APP_NAME}: could not fetch the latest release: {exc}")
         return 1
 
-    # run_capture decodes with the locale encoding, so re-encode with that same
-    # codec to recover the bytes exactly as they arrived.
-    remote = body.encode(locale.getpreferredencoding(False))
+    expected_digest: Optional[str] = None
+    for line in checksums.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[-1].lstrip("*") == "ani-py":
+            candidate = parts[0].lower()
+            if re.fullmatch(r"[0-9a-f]{64}", candidate):
+                expected_digest = candidate
+                break
+    if expected_digest is None:
+        print(f"{APP_NAME}: latest release is missing a valid ani-py checksum.")
+        return 1
+
+    digest = hashlib.sha256(remote).hexdigest()
+    if not secrets.compare_digest(digest, expected_digest):
+        print(f"{APP_NAME}: latest release checksum verification failed; leaving {path} untouched.")
+        return 1
+
     local = path.read_bytes()
     if remote == local:
-        print(f"{APP_NAME} {VERSION} is up to date with main.")
+        print(f"{APP_NAME} {VERSION} is up to date with the latest release.")
         return 0
 
-    # main has no release tags, so "newer" is decided by VERSION rather than
-    # by content. Otherwise a build that is ahead of main (a dev checkout, or
-    # a version reverted upstream) is silently rolled back and loses features.
+    # "Newer" is decided by VERSION rather than content so a local development
+    # build ahead of the latest release is never silently rolled back.
     remote_version = _declared_version(remote)
     local_version = _declared_version(local)
     remote_key = _version_key(remote_version) if remote_version else None
     local_key = _version_key(local_version) if local_version else None
     if remote_key and local_key and remote_key < local_key:
         print(
-            f"{APP_NAME}: main is older than this copy "
+            f"{APP_NAME}: latest release is older than this copy "
             f"({remote_version} < {local_version}); leaving {path} untouched. "
-            "Re-run install.sh to force the main-branch copy if that is what you want."
+            "Re-run install.sh to force the latest published release if that is what you want."
         )
         return 1
 
@@ -3786,10 +3836,9 @@ def run_update(http: Optional[HttpClient] = None, target: Optional[Path] = None)
         if os.path.exists(staged):
             os.unlink(staged)
 
-    digest = hashlib.sha256(remote).hexdigest()[:7]
     print(
-        f"updated {path} from main "
-        f"({len(local)} -> {len(remote)} bytes, sha {digest})"
+        f"updated {path} from the latest release "
+        f"({len(local)} -> {len(remote)} bytes, sha {digest[:7]})"
     )
     print("re-run the installer with --deps if you are missing external tools")
     return 0
@@ -3876,7 +3925,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-U",
         "--update",
         action="store_true",
-        help="replace this script with the current main-branch copy and exit",
+        help="replace this script with the latest verified release and exit",
     )
     parser.add_argument("--_android-relay-config", help=argparse.SUPPRESS)
     parser.add_argument("-V", "--version", action="version", version=f"{APP_NAME} {VERSION}")
