@@ -150,9 +150,12 @@ if [ -n "$checksum_url" ]; then
   download "$checksum_url" "$checksums"
   expected=$(awk '$2 == "ani-py" || $2 == "*ani-py" { print $1; exit }' "$checksums")
   case "$expected" in
-    [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]*) ;;
-    *) echo "error: release checksum file has no ani-py entry" >&2; exit 1 ;;
+    ""|*[!0-9A-Fa-f]*) echo "error: release checksum file has no valid ani-py entry" >&2; exit 1 ;;
   esac
+  [ "${#expected}" -eq 64 ] || {
+    echo "error: release checksum file has no valid ani-py entry" >&2
+    exit 1
+  }
   actual=$(sha256_file "$tmp")
   if [ "$actual" != "$expected" ]; then
     echo "error: ani-py release checksum verification failed" >&2
