@@ -156,37 +156,25 @@ For Android architecture, diagnostics, relay behavior, and limitations, see [doc
 
 ## Real Android usage
 
-### Termux
+### Termux workflow
 
 <p align="center">
-  <img src="docs/screenshots/android/termux-episode-picker.png" alt="Episode picker in Termux" width="360">
+  <img src="docs/screenshots/android/termux-episode-picker.png" alt="Episode picker in Termux" width="340">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/android/termux-playback-controller.png" alt="Playback controller in Termux" width="340">
 </p>
 
-### Android players
+### Playback on Android
 
 <p align="center">
-  <img src="docs/screenshots/android/vlc-playback.png" alt="VLC for Android playback" width="360">
-  <img src="docs/screenshots/android/vlc-subtitle-track.png" alt="VLC subtitle track selection" width="360">
+  <img src="docs/screenshots/android/vlc-playback-sky.png" alt="VLC for Android playback" width="31%">
+  &nbsp;
+  <img src="docs/screenshots/android/subtitles-rendered.png" alt="Subtitles rendered during Android playback" width="31%">
+  &nbsp;
+  <img src="docs/screenshots/android/mpv-playback.png" alt="mpv-android playback" width="31%">
 </p>
 
-<p align="center">
-  <img src="docs/screenshots/android/mpv-playback.png" alt="mpv-android playback" width="360">
-</p>
-
-### Recorded device flows
-
-<p align="center">
-  <a href="docs/clips/android-flow-vlc.mp4">
-    <img src="docs/clips/android-flow-vlc-poster.png" alt="VLC for Android device flow" width="360">
-  </a>
-  <a href="docs/clips/android-flow-mpv.mp4">
-    <img src="docs/clips/android-flow-mpv-poster.png" alt="mpv-android device flow" width="360">
-  </a>
-</p>
-
-<p align="center">
-  <a href="docs/screenshots/android">Browse all Android screenshots</a>
-</p>
+Recorded VLC and mpv-android device flows, diagnostics, and additional screenshots are available in [the Android media gallery](docs/screenshots/android) and [clips directory](docs/clips).
 
 ## Providers
 
