@@ -12,7 +12,30 @@ class FakeHttp:
 
     def get(self, url, *, referer=None, timeout=12):
         self.calls.append((url, referer))
-        return self.responses[url]
+        value = self.responses[url]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def _b64(text):
+    return base64.b64encode(text.encode()).decode()
+
+
+def _player_page(master_url):
+    raw = json.dumps({"src": master_url}).encode()
+    blob = base64.b64encode(
+        bytes(b ^ ani_py.XOR_KEY[i % len(ani_py.XOR_KEY)] for i, b in enumerate(raw))
+    ).decode()
+    return f'<script>window.__P="{blob}"</script>'
+
+
+def _server_item(mode, name, embed_url):
+    return f'<a class="server-item" data-type="{mode}" data-server-name="{name}" data-hash="{_b64(embed_url)}"></a>'
+
+
+SERVERS_URL = f"{ani_py.BASE_URL}/api/theme/episode/servers?episodeId=111"
+TLS_ERROR = ani_py.HttpError("curl: (60) SSL: no alternative certificate subject name matches target hostname")
 
 
 class TestProviderInternals(unittest.TestCase):
@@ -125,6 +148,92 @@ high/index.m3u8
         )
         self.assertEqual(bundle.streams[0].quality, "720p")
         self.assertEqual(bundle.streams[0].url, "https://cdn.example/720/index.m3u8")
+
+    def test_resolve_falls_back_to_next_server_when_hls_host_fails(self):
+        zoko = "https://zoko.example/mal/1/a"
+        other = "https://other.example/mal/1/b"
+        responses = {
+            SERVERS_URL: (
+                _server_item("sub", "ZokoAnime", zoko)
+                + _server_item("sub", "OtherServer", other)
+                # A dub-only server must never be tried for a sub request.
+                + _server_item("dub", "DubServer", "https://dub.example/mal/1/c")
+            ),
+            zoko: _player_page("https://broken-hls.example/master.m3u8"),
+            "https://broken-hls.example/master.m3u8": TLS_ERROR,
+            other: _player_page("https://good-hls.example/master.m3u8"),
+            "https://good-hls.example/master.m3u8":
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720\n720/index.m3u8\n",
+        }
+        http = FakeHttp(responses)
+        bundle = ani_py.HianimeProvider(http).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+        self.assertEqual(bundle.referer, "https://other.example/")
+        self.assertEqual(bundle.streams[0].url, "https://good-hls.example/720/index.m3u8")
+        self.assertNotIn("https://dub.example/mal/1/c", [url for url, _ in http.calls])
+
+    def test_resolve_prefers_zokoanime_regardless_of_page_order(self):
+        zoko = "https://zoko.example/mal/1/a"
+        other = "https://other.example/mal/1/b"
+        responses = {
+            SERVERS_URL: _server_item("sub", "OtherServer", other) + _server_item("sub", "ZokoAnime", zoko),
+            zoko: _player_page("https://zoko-hls.example/master.m3u8"),
+            "https://zoko-hls.example/master.m3u8": "#EXTM3U\n",
+        }
+        http = FakeHttp(responses)
+        bundle = ani_py.HianimeProvider(http).resolve("frieren-999", ani_py.Episode("111", "1"), "sub")
+        self.assertEqual(bundle.referer, "https://zoko.example/")
+        self.assertNotIn(other, [url for url, _ in http.calls])
+
+    def test_resolve_skips_server_whose_payload_cannot_be_read(self):
+        zoko = "https://zoko.example/mal/1/a"
+        other = "https://other.example/mal/1/b"
+        responses = {
+            SERVERS_URL: _server_item("sub", "ZokoAnime", zoko) + _server_item("sub", "OtherServer", other),
+            zoko: "<html>markup changed</html>",
+            other: _player_page("https://good-hls.example/master.m3u8"),
+            "https://good-hls.example/master.m3u8": "#EXTM3U\n",
+        }
+        bundle = ani_py.HianimeProvider(FakeHttp(responses)).resolve(
+            "frieren-999", ani_py.Episode("111", "1"), "sub"
+        )
+        self.assertEqual(bundle.referer, "https://other.example/")
+
+    def test_resolve_reports_first_failure_when_every_server_fails(self):
+        zoko = "https://zoko.example/mal/1/a"
+        other = "https://other.example/mal/1/b"
+        responses = {
+            SERVERS_URL: _server_item("sub", "ZokoAnime", zoko) + _server_item("sub", "OtherServer", other),
+            zoko: _player_page("https://broken-hls.example/master.m3u8"),
+            "https://broken-hls.example/master.m3u8": TLS_ERROR,
+            other: ani_py.HttpError("HTTP 500"),
+        }
+        with self.assertRaises(ani_py.ProviderUnavailable) as ctx:
+            ani_py.HianimeProvider(FakeHttp(responses)).resolve(
+                "frieren-999", ani_py.Episode("111", "1"), "sub"
+            )
+        message = str(ctx.exception)
+        self.assertIn("HiAnime HLS host failed", message)
+        self.assertIn("OtherServer", message)
+
+    def test_resolve_single_server_failure_keeps_original_error(self):
+        zoko = "https://zoko.example/mal/1/a"
+        responses = {
+            SERVERS_URL: _server_item("sub", "ZokoAnime", zoko),
+            zoko: _player_page("https://broken-hls.example/master.m3u8"),
+            "https://broken-hls.example/master.m3u8": TLS_ERROR,
+        }
+        with self.assertRaises(ani_py.ProviderUnavailable) as ctx:
+            ani_py.HianimeProvider(FakeHttp(responses)).resolve(
+                "frieren-999", ani_py.Episode("111", "1"), "sub"
+            )
+        self.assertNotIn("other servers", str(ctx.exception))
+
+    def test_resolve_without_any_server_for_mode_raises_stream_not_found(self):
+        responses = {SERVERS_URL: _server_item("dub", "ZokoAnime", "https://zoko.example/mal/1/a")}
+        with self.assertRaises(ani_py.StreamNotFound):
+            ani_py.HianimeProvider(FakeHttp(responses)).resolve(
+                "frieren-999", ani_py.Episode("111", "1"), "sub"
+            )
 
     def test_episode_scrape(self):
         page = '''<a class="ep-item" data-number="1" data-id="111" href="/watch/frieren-999?ep=1"></a>

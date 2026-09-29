@@ -646,25 +646,52 @@ class HianimeProvider(Provider):
         except HttpError as exc:
             raise ProviderUnavailable(f"HiAnime server lookup failed: {exc}") from exc
 
-        candidates = re.findall(r'<[^>]*class="[^"]*server-item[^"]*"[^>]*>', server_page, re.I)
-        encoded = None
-        for tag in candidates:
+        embeds: list[tuple[str, str]] = []
+        for server_name, encoded in self._server_hashes(server_page, mode):
+            decoded = self._decode_embed_hash(encoded)
+            if decoded:
+                embeds.append((server_name, decoded))
+        if not embeds:
+            raise StreamNotFound(f"HiAnime has no {mode} source for episode {episode.number}.")
+
+        # ZokoAnime is tried first; if its embed or HLS host is broken, fall
+        # through to the other servers HiAnime lists for the same episode.
+        failures: list[tuple[str, ProviderError]] = []
+        for index, (server_name, embed_url) in enumerate(embeds):
+            try:
+                return self._resolve_embed(embed_url)
+            except ProviderError as exc:
+                failures.append((server_name, exc))
+                if index + 1 < len(embeds):
+                    warn(f"HiAnime {server_name} server failed: {exc}; trying {embeds[index + 1][0]}.")
+        first = failures[0][1]
+        if len(failures) == 1:
+            raise first
+        others = ", ".join(name for name, _ in failures[1:])
+        raise type(first)(f"{first} (other servers also failed: {others})") from first
+
+    @staticmethod
+    def _server_hashes(server_page: str, mode: str) -> list[tuple[str, str]]:
+        """Return (server name, embed hash) pairs for ``mode``, ZokoAnime first."""
+        found: list[tuple[str, str]] = []
+        for tag in re.findall(r'<[^>]*class="[^"]*server-item[^"]*"[^>]*>', server_page, re.I):
             attrs = _attrs(tag)
-            if attrs.get("data-type") == mode and attrs.get("data-server-name", "").lower() == "zokoanime":
-                encoded = attrs.get("data-hash")
-                if encoded:
-                    break
-        if not encoded:
+            name = attrs.get("data-server-name", "")
+            encoded = attrs.get("data-hash")
+            if attrs.get("data-type") == mode and name and encoded and (name, encoded) not in found:
+                found.append((name, encoded))
+        if not any(name.lower() == "zokoanime" for name, _ in found):
             m = re.search(
                 rf'data-type="{re.escape(mode)}".*?data-server-name="ZokoAnime".*?data-hash="([^"]+)"',
                 server_page,
                 re.I | re.S,
             )
-            encoded = m.group(1) if m else None
-        embed_url = self._decode_embed_hash(encoded or "")
-        if not embed_url:
-            raise StreamNotFound(f"HiAnime has no {mode} source for episode {episode.number}.")
+            if m:
+                found.append(("ZokoAnime", m.group(1)))
+        found.sort(key=lambda item: item[0].lower() != "zokoanime")
+        return found
 
+    def _resolve_embed(self, embed_url: str) -> StreamBundle:
         parts = urlsplit(embed_url)
         referer = f"{parts.scheme}://{parts.netloc}/"
         mal_match = re.search(r"/mal/(\d+)/", embed_url)
