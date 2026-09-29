@@ -25,7 +25,12 @@ The standalone artifact is the contents of `ani_py.py` copied to `dist/ani-py` a
 
 ## Release checklist
 
-Before a stable release:
+A successful `test` workflow on `main` automatically publishes a GitHub
+Release snapshot when distributable files changed. The workflow builds
+`dist/ani-py`, attaches the installer/uninstaller, writes `SHA256SUMS`, and
+marks that tested snapshot as the latest release.
+
+Before merging a distributable change:
 
 1. CI is green on every supported Python version.
 2. `make test` and `make build` pass locally.
