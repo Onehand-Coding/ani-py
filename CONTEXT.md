@@ -51,13 +51,13 @@ networking, menus, playback, and downloads to best-of-breed external tools.
 | Testing | stdlib `unittest` only (no pytest) |
 | Build | `scripts/build-standalone.sh` → `dist/ani-py` |
 | Tool check | `scripts/check-tools.sh` (incl. ani-skip `-i` support) |
-| CI | GitHub Actions: compile + unittest + standalone build |
+| CI | GitHub Actions: compile + unittest + standalone build; tested main snapshots publish checksummed release assets |
 
 ### Infrastructure
 | Component | Choice |
 |---|---|
 | Container | None |
-| Deployment | Symlinked from `~/.local/bin/ani-py`; no package, no service |
+| Deployment | Standalone release asset installed to `~/.local/bin/ani-py`; no package, no service |
 
 ---
 
@@ -254,7 +254,7 @@ flags safely; private socket avoids hijacking the user's mpv.
 ### Termux/Android playback port
 **Choice:** Detached loopback relay child (`run_android_relay` via `--_android-relay-config`) plus intent dispatch in `Playback`; `android_auto` asks Android's resolver first, explicit `vlc`/`mpv` modes pin `org.videolan.vlc` / `is.xyz.mpv`; `termux-open` chooser and existing-`rish` retry are fallbacks only.
 **Status:** Current (0.5.1 rework; live-device verified 2026-09-24). Supersedes the 0.5.0 in-process `AndroidMediaRelay` with `pm path` preflight gating.
-**Reason:** `pm path` from an ordinary Termux UID is unreliable and unnecessary for `VIEW` dispatch; Android intents still cannot carry Referer headers, so the relay keeps provider headers inside Termux and rewrites nested HLS child/key/segment URLs through itself on 127.0.0.1 behind a random secret token. A detached child with idle timeout lets `Detach & exit` survive.
+**Reason:** `pm path` from an ordinary Termux UID is unreliable and unnecessary for `VIEW` dispatch; Android intents still cannot carry Referer headers, so the relay keeps provider headers inside Termux and rewrites nested HLS child/key/segment URLs through itself on 127.0.0.1 behind a random secret token. The production relay also keeps a capability set: only the initial stream/subtitle targets and child URLs discovered while rewriting HLS manifests may be fetched. A detached child with idle timeout lets `Detach & exit` survive.
 **Alternatives Considered:** Wholesale copy of reference ZIP (rejected: would clobber newer provider defaults); direct intent URLs without relay (rejected: Referer-gated streams fail); killing the Android player on `stop()` (rejected: stopping the local relay is the least invasive action).
 
 ### Android subtitles (0.5.2-rc3 → rc7, live-device verified 2026-09-25)
@@ -292,28 +292,25 @@ the running mpv instead of restarting playback and losing position.
 and the other desktop players keep their existing plain-detach behaviour,
 because they have no private socket to reconnect to.
 
-### Calendar versioning (2026.9.29)
+### Calendar versioning and release snapshots (2026.9.30)
 **Choice:** `VERSION` is a calendar version (`YYYY.M.D`) - the date the most
-recent user-visible change landed. No suffixes, no counters, no semver. It is
-bumped in the same commit as the change, and the rules live in
-`CONTRIBUTING.md` under "Versioning".
+recent user-visible change landed. No suffixes, no counters, no semver. A
+successful `test` workflow on `main` publishes a unique
+`release-<VERSION>-<short-sha>` snapshot when distributable files changed;
+`install.sh` and `ani-py --update` consume the latest release asset and verify
+`ani-py` against `SHA256SUMS`.
 **Status:** Current
-**Reason:** `install.sh` and `ani-py --update` both serve `main`, so there is no
-release ceremony - a merge *is* the release. Semver demanded a judgment call on
-every single change (patch or minor?), and that call is precisely what produced
-the previous state: `0.5.2-rc11` had been bumped eleven times without one
-release ever being cut, and two user-visible features shipped on a version
-string identical to the build before them. A date cannot be bumped without a
-deliberate decision, cannot be written backwards by accident, and sorts
-correctly with no parser cleverness. `VERSION` is load-bearing rather than
-decorative now: `--update` compares it to decide whether replacing the local
-copy would be a downgrade.
+**Reason:** CalVer avoids the patch/minor judgment problem that produced the old
+`0.5.2-rc11` sequence, while automated release snapshots remove mutable
+`main` from the normal install/update data path without adding a manual release
+ceremony. `VERSION` remains load-bearing: `--update` compares it to decide
+whether replacing the local copy would be a downgrade.
 **Alternatives Considered:** SemVer with bump-per-merge (rejected: the
 patch/minor judgment call is the thing that went wrong before); a build counter
-like `-rc12` (rejected: a counter in semver clothing, carrying the identical
-"which number?" problem, and implying release candidates that never existed);
-`git describe` strings (rejected: the file is fetched raw from `main` with no
-build step, so a commit hash cannot be stamped in at install time).
+like `-rc12` (rejected: a counter in semver clothing); raw `main` downloads
+(rejected for normal installs/updates because the bytes are mutable and were
+not independently checked). `ANI_PY_REF` remains an explicit development
+escape hatch and warns that checksum verification is bypassed.
 **Transition:** Copies installed before this change carry `0.5.2-rc11`.
 `_version_key` therefore reads the leading digits of each dot-separated
 component, so those installs upgrade normally instead of making the guard treat
@@ -445,18 +442,14 @@ semver cannot creep back in.
 
 ---
 
-- There is no package manager and **no release tags**. `install.sh` copies
-  `ani_py.py` straight from `main` onto disk, so a merge to `main` *is* the
-  release and an installed copy never changes by itself - which is exactly
-  why provider breakage reaches users only when they re-run the installer.
-  `ani-py -U/--update` fetches `main` and atomically replaces the running
-  file, but it **refuses when main's `VERSION` is older than the local one**,
-  because a build ahead of `main` (a dev checkout, or a version reverted
-  upstream) would otherwise be silently rolled back and stripped of the
-  features it has and `main` does not. Verified live: without the guard,
-  updating a newer local copy did in fact replace it with an older `main`
-  that no longer parsed the flag that performed the update. `install.sh`
-  remains the escape hatch for forcing the `main` copy.
+- There is no package manager. Normal installs and updates consume the latest
+  checksummed GitHub Release snapshot produced only after the main test workflow
+  succeeds. The installer downloads into a `mktemp` directory and verifies
+  `ani-py` against `SHA256SUMS`; `--update` fetches bytes without text/locale
+  decoding, verifies the same digest, then atomically replaces the running file.
+  The downgrade guard still refuses a release whose `VERSION` is older than a
+  newer local development copy. `ANI_PY_REF` is intentionally development-only
+  and warns before bypassing release checksum verification.
 
 ## 11. Implementation Notes
 
