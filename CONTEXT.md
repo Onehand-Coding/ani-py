@@ -301,9 +301,12 @@ because they have no private socket to reconnect to.
 - HiAnime lists several servers per episode. `resolve` tries ZokoAnime
   first and falls through to the others of the same sub/dub type when a
   server's embed page or HLS host fails (dead CDN, bad TLS cert, changed
-  markup). All servers are assumed to serve the same `window.__P` player
-  payload; one that does not is skipped, not treated as a hard error. If every
-  server fails, the first (ZokoAnime) error is raised with the others named.
+  markup). Each server is assumed to serve the same player payload shape;
+  one that does not is skipped, not treated as a hard error. If every
+  server fails, the first error is raised with the others named. Note that
+  upstream currently lists a single server per type, so the fall-through has
+  nothing to walk until that changes - and the current payload shape is JS
+  gated, see Known Gotchas.
 - HLS variant sets differ per episode upstream (one episode may offer
   1080/720/360 while another offers 1080-only); quality selection falls
   back to best available - not an app bug.
@@ -322,13 +325,46 @@ because they have no private socket to reconnect to.
 ### Provider / network
 - Hianime markup changes silently break search/resolve - when streams
   fail, check markup first; the fix is confined to `HianimeProvider`.
+- HiAnime embed hosts gate on `Referer` and answer **HTTP 200** with their
+  own branded error page when it is missing, so a soft 404 looks exactly
+  like a markup change. Always send a `Referer` when fetching an embed page,
+  and treat a known error-page marker as a host failure, not a markup
+  failure. This masked a real upstream change for a while.
+- HiAnime's live backend moved from the `window.__P` blob to a
+  `stream/getSources` XHR (megaplay.buzz). Only the `enc` field is
+  encrypted: AES-256-CBC over the manifest JSON, key = the 16-byte literal
+  seed `i?LMTAx0Q6,:}50U` zero-padded into a 32-byte buffer, IV =
+  `W0;27ToaUpl_P%'c`. The manifest's HLS playlist and its segments are
+  plaintext. stdlib has no AES, so `ani_py.py` carries a small decrypt-only
+  AES-256-CBC implementation (`_aes256_cbc_decrypt`); `_resolve_embed`
+  keeps the legacy `window.__P` path as a fallback when the blob is still
+  present. `stream/getSources` needs the embed's own origin as `Referer`
+  plus `X-Requested-With: XMLHttpRequest`.
+- The megaplay embed exposes `data-id`, `data-realid` and `data-mediaid`.
+  Only **`data-id`** may be sent to `stream/getSources`: it is the
+  per-episode, per-mode identifier. `data-realid` is shared by the sub and
+  dub embeds of the same episode, so requesting it returns **a different
+  show entirely** (verified: One Piece episode 1 resolved to Toilet-bound
+  Hanako-kun's video and subtitle), and it also collapses sub and dub onto
+  one stream. `data-mediaid` is the series id and is equally wrong here.
+  When a provider "works" but plays the wrong content, identify the media
+  from its subtitle text - durations and filenames look entirely normal.
+- Do not repeat the earlier wrong conclusion that the m3u8 playlists and
+  every segment were encrypted and that a local decrypting proxy was
+  required. That reading came from the client's own proxy fallback path,
+  not the normal stream; the normal stream is plaintext HLS. Confirm a
+  claimed encryption layer against the actual bytes (`file`, `ffprobe`)
+  before designing around it.
 - ffmpeg's HLS demuxer rejects segments whose extension is not in its
   allowlist, and it prints a misleading `mime type is not rfc8216
-  compliant` rather than the real reason. KAA serves MPEG-TS as `.jpg`
-  and fails exactly this way. mpv recovers with
-  `--demuxer-lavf-o=allowed_extensions=ALL`; the ffmpeg CLI flag
+  compliant` rather than the real reason. KAA served MPEG-TS as `.jpg`, and
+  HiAnime's current megaplay backend does the same with a rotating set of
+  decoys (`.jpg`, `.html`, `.js`, `.css`, `.txt`, `.png`, `.webp`, `.ico`).
+  mpv recovers with `--demuxer-lavf-o=allowed_extensions=ALL`, which
+  `Playback._mpv_command` now always passes; the ffmpeg CLI flag
   `-allowed_extensions ALL` does *not* work for the same URL, because the
-  option only takes effect on the demuxer context.
+  option only takes effect on the demuxer context. This - not encryption -
+  was the thing actually blocking playback.
 - A provider that resolves to a playable stream is not the same as a
   provider that works. KAA resolves cleanly and mpv decodes it, yet every
   segment is video-only with no audio. Always ffprobe a real segment for
