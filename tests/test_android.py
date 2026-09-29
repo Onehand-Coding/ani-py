@@ -168,6 +168,7 @@ class TestAndroidIntent(unittest.TestCase):
         self.assertEqual(pb.play(STREAM, **KW), 0)
         start.assert_called_once_with(
             KW["referer"],
+            STREAM.url,
             KW["subtitle"],
             subtitle_language=None,
             subtitle_label=None,
@@ -645,8 +646,13 @@ class TestAndroidRelay(unittest.TestCase):
                 master = response.read().decode()
             with urllib.request.urlopen(endpoint.subtitle_url_for(signed_subtitle), timeout=3) as response:
                 self.assertEqual(response.headers.get("Content-Type"), "text/vtt; charset=utf-8")
-            missing_url = next(
+            variant_url = next(
                 line for line in master.splitlines() if line and not line.startswith("#")
+            )
+            with urllib.request.urlopen(variant_url, timeout=3) as response:
+                media = response.read().decode()
+            missing_url = next(
+                line for line in media.splitlines() if line and not line.startswith("#")
             )
             try:
                 urllib.request.urlopen(missing_url, timeout=3)
