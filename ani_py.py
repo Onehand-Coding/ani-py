@@ -41,9 +41,8 @@ from urllib.parse import quote, quote_plus, urlencode, urljoin, urlsplit
 
 APP_NAME = "ani-py"
 # Calendar version (CalVer): the date the most recent user-visible change landed.
-# Monotonic by construction and comparable with no release process, which suits a
-# tool installed straight from `main`. Bump it in the same commit as the change -
-# see "Versioning" in CONTRIBUTING.md.
+# Monotonic by construction and comparable across automated release snapshots.
+# Bump it in the same commit as the change - see "Versioning" in CONTRIBUTING.md.
 VERSION = "2026.9.30"
 BASE_URL = "https://hianime.at"
 ANILIGHT_BASE_URL = "https://anilight.live"
