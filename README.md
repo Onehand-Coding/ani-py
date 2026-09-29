@@ -158,7 +158,9 @@ For Android architecture, diagnostics, relay behavior, and limitations, see [doc
 
 ### Termux
 
-![Episode picker in Termux](docs/screenshots/android/termux-episode-picker.png)
+<p align="center">
+  <img src="docs/screenshots/android/termux-episode-picker.png" alt="Episode picker in Termux" width="360">
+</p>
 
 ### Android players
 
