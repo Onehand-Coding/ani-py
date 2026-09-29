@@ -513,6 +513,50 @@ class TestAndroidRelay(unittest.TestCase):
             relay.shutdown(); relay.server_close()
             upstream.shutdown(); upstream.server_close()
 
+    def test_relay_rejects_forged_target_outside_capability_set(self):
+        payload = b"ok"
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        allowed = f"http://127.0.0.1:{upstream.server_address[1]}/allowed"
+        relay = ani_py._AndroidRelayHTTPServer(
+            ("127.0.0.1", 0), ani_py._AndroidRelayHandler,
+            token="token", referer="", user_agent="ani-py-test",
+            allowed_targets=[allowed],
+        )
+        relay_thread = threading.Thread(target=relay.serve_forever, daemon=True)
+        relay_thread.start()
+        try:
+            with urllib.request.urlopen(relay.relay_url(allowed), timeout=3) as response:
+                self.assertEqual(response.read(), payload)
+
+            endpoint = ani_py.AndroidRelayEndpoint(
+                port=relay.server_address[1], token="token"
+            )
+            forged = endpoint.url_for(
+                f"http://127.0.0.1:{upstream.server_address[1]}/forged"
+            )
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(forged, timeout=3)
+            self.assertEqual(caught.exception.code, 403)
+            caught.exception.close()
+        finally:
+            relay.shutdown()
+            relay.server_close()
+            upstream.shutdown()
+            upstream.server_close()
+
     def test_debug_log_proves_lifecycle_requests_and_redacts_signed_urls(self):
         webvtt = b"WEBVTT\n\n00:00:01.000 --> 00:00:05.000\nlogged subtitle\n"
 
@@ -523,7 +567,7 @@ class TestAndroidRelay(unittest.TestCase):
             def do_GET(self):
                 path = urllib.parse.urlsplit(self.path).path
                 if path == "/master.m3u8":
-                    body = b"#EXTM3U\n#EXTINF:5,\n"
+                    body = b"#EXTM3U\n#EXTINF:5,\n/missing.ts\n"
                     content_type = "application/vnd.apple.mpegurl"
                     status = 200
                 elif path == "/sub.vtt":
@@ -547,6 +591,9 @@ class TestAndroidRelay(unittest.TestCase):
         self.addCleanup(upstream.server_close)
         self.addCleanup(upstream.shutdown)
 
+        upstream_base = f"http://127.0.0.1:{upstream.server_address[1]}"
+        signed_subtitle = upstream_base + "/sub.vtt?token=signed-secret-value"
+        initial_target = upstream_base + "/master.m3u8"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "config.json"
@@ -556,6 +603,8 @@ class TestAndroidRelay(unittest.TestCase):
                 "ready": str(ready_path),
                 "token": "relay-secret-token",
                 "referer": "https://embed.example/",
+                "initial_target": initial_target,
+                "subtitle_target": signed_subtitle,
                 "user_agent": "ani-py-test",
                 "idle_timeout": 60,
                 "debug": True,
@@ -592,14 +641,15 @@ class TestAndroidRelay(unittest.TestCase):
 
             ready = json.loads(ready_path.read_text(encoding="utf-8"))
             endpoint = ani_py.AndroidRelayEndpoint(port=int(ready["port"]), token=ready["token"])
-            upstream_base = f"http://127.0.0.1:{upstream.server_address[1]}"
-            signed_subtitle = upstream_base + "/sub.vtt?token=signed-secret-value"
-            with urllib.request.urlopen(endpoint.url_for(upstream_base + "/master.m3u8"), timeout=3):
-                pass
+            with urllib.request.urlopen(endpoint.url_for(initial_target), timeout=3) as response:
+                master = response.read().decode()
             with urllib.request.urlopen(endpoint.subtitle_url_for(signed_subtitle), timeout=3) as response:
                 self.assertEqual(response.headers.get("Content-Type"), "text/vtt; charset=utf-8")
+            missing_url = next(
+                line for line in master.splitlines() if line and not line.startswith("#")
+            )
             try:
-                urllib.request.urlopen(endpoint.url_for(upstream_base + "/missing.ts"), timeout=3)
+                urllib.request.urlopen(missing_url, timeout=3)
             except urllib.error.HTTPError as exc:
                 exc.close()
             else:
