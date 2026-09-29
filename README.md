@@ -164,10 +164,10 @@ For Android architecture, diagnostics, relay behavior, and limitations, see [doc
   <img src="docs/screenshots/android/termux-playback-controller.png" alt="Playback controller in Termux" width="44%">
 </p>
 
-### Android players
+### Android playback
 
 <p align="center">
-  <img src="docs/screenshots/android/vlc-playback.png" alt="VLC for Android playback" width="48%">
+  <img src="docs/screenshots/android/subtitles-rendered.png" alt="Android playback with rendered subtitles" width="48%">
   &nbsp;
   <img src="docs/screenshots/android/mpv-playback.png" alt="mpv-android playback" width="48%">
 </p>
