@@ -84,8 +84,9 @@ Update it with:
 ani-py --update
 ```
 
-This fetches the current `main` copy and replaces the installed script in
-place. To also install external tools, re-run the installer with `--deps`:
+This fetches the latest published release, verifies its SHA-256 digest, and
+replaces the installed script in place. To also install external tools, re-run
+the installer with `--deps`:
 
 ```sh
 curl -fsSL https://github.com/Onehand-Coding/ani-py/releases/latest/download/install.sh | sh -s -- --deps
@@ -96,13 +97,13 @@ installed copy, so a local build ahead of the release is never silently rolled
 back. Re-run `install.sh` if you want to force the latest published release.
 
 The version is a calendar date, so `ani-py --version` reports something like
-`ani-py 2026.9.29` rather than a semver string. That date is what `--update`
+`ani-py 2026.9.30` rather than a semver string. That date is what `--update`
 compares to decide whether an update would actually be a downgrade.
 
 ### Uninstall
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/uninstall.sh | sh
+curl -fsSL https://github.com/Onehand-Coding/ani-py/releases/latest/download/uninstall.sh | sh
 ```
 
 The uninstaller removes ani-py only; it does not remove system packages or Android players.
