@@ -25,7 +25,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 is_termux=0
-if [ -n "${TERMUX_VERSION:-}" ] || [ -n "${PREFIX:-}" ] && [ -d "${PREFIX:-}/etc/termux" ]; then
+if [ -n "${TERMUX_VERSION:-}" ] || { [ -n "${PREFIX:-}" ] && [ -d "${PREFIX:-}/etc/termux" ]; }; then
   is_termux=1
 fi
 
@@ -40,7 +40,7 @@ fi
 target="$install_prefix/bin/ani-py"
 
 case "$target" in
-  /usr/*|/opt/*)
+  /usr|/usr/*|/opt|/opt/*)
     if [ "$(id -u)" -eq 0 ]; then
       rm -f "$target"
     elif command -v sudo >/dev/null 2>&1; then

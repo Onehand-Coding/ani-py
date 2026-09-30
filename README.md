@@ -34,13 +34,13 @@ It is an independent, AI-assisted implementation inspired by terminal anime laun
 Install ani-py:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/install.sh | sh
+curl -fsSL https://github.com/Onehand-Coding/ani-py/releases/latest/download/install.sh | sh
 ```
 
 Install recommended dependencies too when your package manager is supported:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/install.sh | sh -s -- --deps
+curl -fsSL https://github.com/Onehand-Coding/ani-py/releases/latest/download/install.sh | sh -s -- --deps
 ```
 
 The default Linux/Unix target is `~/.local/bin/ani-py`. Use `--prefix DIR` to choose another prefix.
@@ -52,7 +52,7 @@ Core requirements are Python 3.10+ and curl. `fzf` and mpv are recommended; VLC,
 The same installer detects Termux and installs to `$PREFIX/bin/ani-py`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/install.sh | sh -s -- --deps
+curl -fsSL https://github.com/Onehand-Coding/ani-py/releases/latest/download/install.sh | sh -s -- --deps
 ```
 
 Install VLC for Android or mpv-android separately from your preferred Android app source. Shizuku/rish is optional and is **not** required.
@@ -76,31 +76,34 @@ make build
 ### Updating
 
 ani-py installs a copy of itself, so an installed copy never changes on its
-own. Update it with:
+own. Published release assets include `SHA256SUMS`; the installer and
+`--update` verify the standalone script before replacing an existing copy.
+Update it with:
 
 ```sh
 ani-py --update
 ```
 
-This fetches the current `main` copy and replaces the installed script in
-place. To also install external tools, re-run the installer with `--deps`:
+This fetches the latest published release, verifies its SHA-256 digest, and
+replaces the installed script in place. To also install external tools, re-run
+the installer with `--deps`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/install.sh | sh -s -- --deps
+curl -fsSL https://github.com/Onehand-Coding/ani-py/releases/latest/download/install.sh | sh -s -- --deps
 ```
 
-`--update` refuses to run when `main` is older than the installed copy, so a
-local build ahead of `main` is never silently rolled back. Re-run
-`install.sh` if you want to force the `main` copy regardless.
+`--update` refuses to run when the latest published release is older than the
+installed copy, so a local build ahead of the release is never silently rolled
+back. Re-run `install.sh` if you want to force the latest published release.
 
 The version is a calendar date, so `ani-py --version` reports something like
-`ani-py 2026.9.29` rather than a semver string. That date is what `--update`
+`ani-py 2026.9.30` rather than a semver string. That date is what `--update`
 compares to decide whether an update would actually be a downgrade.
 
 ### Uninstall
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Onehand-Coding/ani-py/main/uninstall.sh | sh
+curl -fsSL https://github.com/Onehand-Coding/ani-py/releases/latest/download/uninstall.sh | sh
 ```
 
 The uninstaller removes ani-py only; it does not remove system packages or Android players.

@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import os
 import tempfile
@@ -107,17 +108,25 @@ class TestCLI(unittest.TestCase):
 
 
 class FakeUpdateHttp:
-    """Minimal stand-in for HttpClient.get on the update path."""
+    """Minimal stand-in for release asset downloads on the update path."""
 
-    def __init__(self, body):
-        self.body = body
+    def __init__(self, body, checksum=None):
+        self.body = body if isinstance(body, bytes) else body.encode()
+        digest = hashlib.sha256(self.body).hexdigest()
+        self.checksum = checksum if checksum is not None else f"{digest}  ani-py\n"
         self.calls = []
 
-    def get(self, url, *, referer=None, headers=None, timeout=15, cookie_jar=None):
-        self.calls.append((url, timeout))
+    def get_bytes(self, url, *, timeout=30):
+        self.calls.append(("bytes", url, timeout))
         if isinstance(self.body, Exception):
             raise self.body
         return self.body
+
+    def get(self, url, *, referer=None, headers=None, timeout=15, cookie_jar=None):
+        self.calls.append(("text", url, timeout))
+        if isinstance(self.checksum, Exception):
+            raise self.checksum
+        return self.checksum
 
 
 LOCAL_COPY = b"#!/usr/bin/env python3\nVERSION = '2026.9.29'\n"
@@ -125,7 +134,7 @@ REMOTE_COPY = b"#!/usr/bin/env python3\nVERSION = '2026.9.30'\n"
 
 
 class TestUpdateCommand(unittest.TestCase):
-    """`--update` self-replaces the running script from main."""
+    """`--update` self-replaces the running script from a verified release."""
 
     def _target(self, tmp, content=LOCAL_COPY):
         path = Path(tmp) / "ani_py.py"
@@ -149,7 +158,7 @@ class TestUpdateCommand(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(tmp)
             code, output = self._run(
-                FakeUpdateHttp(LOCAL_COPY.decode()), target
+                FakeUpdateHttp(LOCAL_COPY), target
             )
             self.assertEqual(code, 0)
             self.assertIn("up to date", output)
@@ -159,7 +168,7 @@ class TestUpdateCommand(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(tmp)
             code, output = self._run(
-                FakeUpdateHttp(REMOTE_COPY.decode()), target
+                FakeUpdateHttp(REMOTE_COPY), target
             )
             self.assertEqual(code, 0)
             self.assertEqual(target.read_bytes(), REMOTE_COPY)
@@ -175,7 +184,7 @@ class TestUpdateCommand(unittest.TestCase):
             )
 
     def test_older_remote_version_is_refused(self):
-        # A dev checkout ahead of main must not be silently rolled back.
+        # A dev checkout ahead of the latest release must not be silently rolled back.
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(tmp)
             body = "VERSION = '2026.9.28'\n"
@@ -185,7 +194,7 @@ class TestUpdateCommand(unittest.TestCase):
             self.assertIn("older", output)
 
     def test_same_version_different_content_still_updates(self):
-        # A code-only change on main keeps the version string; that must update.
+        # A code-only release can keep the version string; different verified content must update.
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(tmp)
             body = LOCAL_COPY.decode() + "# a later commit\n"
@@ -213,7 +222,7 @@ class TestUpdateCommand(unittest.TestCase):
 
     def test_legacy_install_updates_onto_calendar_version(self):
         # The transition that every currently-installed user hits: their copy
-        # still carries legacy semver, and main is a CalVer date. Must update.
+        # still carries legacy semver, and the release is a CalVer date. Must update.
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(
                 tmp, b"#!/usr/bin/env python3\nVERSION = '0.5.2-rc11'\n"
@@ -250,21 +259,40 @@ class TestUpdateCommand(unittest.TestCase):
     def test_network_failure_is_reported_not_raised(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(tmp)
-            code, output = self._run(
-                FakeUpdateHttp(ani_py.HttpError("network unreachable")), target
-            )
+            http = FakeUpdateHttp(REMOTE_COPY)
+            http.body = ani_py.HttpError("network unreachable")
+            code, output = self._run(http, target)
             self.assertEqual(code, 1)
             self.assertEqual(target.read_bytes(), LOCAL_COPY)
             self.assertIn("network unreachable", output)
 
-    def test_update_fetches_from_the_main_branch(self):
+    def test_checksum_mismatch_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = self._target(tmp)
-            http = FakeUpdateHttp(REMOTE_COPY.decode())
+            bad = "0" * 64 + "  ani-py\n"
+            code, output = self._run(FakeUpdateHttp(REMOTE_COPY, checksum=bad), target)
+            self.assertEqual(code, 1)
+            self.assertEqual(target.read_bytes(), LOCAL_COPY)
+            self.assertIn("checksum verification failed", output)
+
+    def test_missing_checksum_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = self._target(tmp)
+            code, output = self._run(
+                FakeUpdateHttp(REMOTE_COPY, checksum="deadbeef  other-file\n"), target
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(target.read_bytes(), LOCAL_COPY)
+            self.assertIn("missing a valid", output)
+
+    def test_update_fetches_release_assets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = self._target(tmp)
+            http = FakeUpdateHttp(REMOTE_COPY)
             self._run(http, target)
-            url = http.calls[0][0]
-            self.assertIn("Onehand-Coding/ani-py", url)
-            self.assertIn("/main/ani_py.py", url)
+            urls = [call[1] for call in http.calls]
+            self.assertTrue(any(url.endswith("/releases/latest/download/ani-py") for url in urls))
+            self.assertTrue(any(url.endswith("/releases/latest/download/SHA256SUMS") for url in urls))
 
 
 if __name__ == "__main__":

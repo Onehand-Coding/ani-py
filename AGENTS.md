@@ -36,8 +36,8 @@ leak provider-specific markup, headers, or endpoints into the app layer.
 commit as any change a user can notice: a feature, a bug fix, a provider
 behavior change, or a CLI surface change. It only ever increases, never moves
 backwards, and carries no suffix or counter. `ani-py --update` compares it
-against `main` and refuses to roll a newer local copy back, so a stale version
-is a real bug. Full rules in `CONTRIBUTING.md` under "Versioning".
+against the latest checksummed release and refuses to roll a newer local copy
+back, so a stale version is a real bug. Full rules in `CONTRIBUTING.md` under "Versioning".
 
 **Match the surrounding style.** Existing code uses 4-space indents, plain
 stdlib types (`Optional`, not `X | None`, outside of annotations), and small
