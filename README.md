@@ -173,6 +173,21 @@ and what plays next stay visible even when the terminal is in the background:
 ▶ Frieren  Ep 3 (3/12)  14:32/24:10 (59%)  → Ep 4
 ```
 
+Read it like this:
+
+| Part | Meaning |
+|---|---|
+| `Ep 3` | which episode of the season is playing |
+| `(3/12)` | **the 3rd of the 12 episodes in this queue** — not 3 of 12 in the season |
+| `14:32/24:10 (59%)` | playback position, total runtime, percentage |
+| `→ Ep 4` | what plays next; absent on the last one |
+
+The two numbers are separate on purpose. Starting mid-season, `-e 24
+--auto-next-limit 2` shows `Ep 24 (1/2)` then `Ep 25 (2/2)`: episode 24 of 25,
+with the two episodes it queued. Rendering the episode number as a ratio with
+the queue length (`Ep 24/2`) would read as "24 out of 2", which is not a
+number.
+
 This is `--auto-next` only; ordinary playback still opens its interactive
 menu. Both displays are suppressed when output is not a terminal, so piping to
 a file or a log stays clean.
