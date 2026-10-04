@@ -22,6 +22,7 @@ It is an independent, AI-assisted implementation inspired by terminal anime laun
 - VLC for Android and mpv-android from Termux
 - Android HLS relay for Referer-protected streams and subtitles
 - Interactive next / previous / replay / episode / quality / subtitle controls
+- Provider-independent `--auto-next` for desktop mpv, advancing only after natural EOF
 - Private mpv IPC by default, with persistent desktop-mpv detach/reattach controls
 - Downloads through `yt-dlp` with `ffmpeg` fallback
 - Optional `ani-skip` integration for desktop mpv
@@ -97,7 +98,7 @@ installed copy, so a local build ahead of the release is never silently rolled
 back. Re-run `install.sh` if you want to force the latest published release.
 
 The version is a calendar date, so `ani-py --version` reports something like
-`ani-py 2026.9.30` rather than a semver string. That date is what `--update`
+`ani-py 2026.10.4` rather than a semver string. That date is what `--update`
 compares to decide whether an update would actually be a downgrade.
 
 ### Uninstall
@@ -118,6 +119,7 @@ ani-py --dub -e 1-4 "bleach"
 ani-py -c
 ani-py -d -e 1-12 "pluto"
 ani-py --skip "summer time rendering"
+ani-py --auto-next -e 3 "frieren"
 ani-py --sub-lang de -d -e 1 "one piece"
 ani-py --attach
 ani-py --update
@@ -134,6 +136,26 @@ ani-py -p mpv "frieren"                    # mpv
 ```
 
 Run `ani-py --help` for the complete current option list.
+
+### Auto-next
+
+`--auto-next` is controlled by ani-py rather than by a streaming provider.
+ani-py keeps the episode list, waits for desktop mpv to report natural EOF over
+its private IPC socket, then lazily resolves and starts the next episode. This
+preserves quality/subtitle preferences, per-episode `ani-skip` behavior,
+history updates, and normal provider failover.
+
+With one selected episode, auto-next continues from that episode through the
+currently loaded episode list. With an explicit multi-episode selection or
+range, only that queue is played. Closing/stopping mpv or losing IPC stops the
+queue; ani-py never treats a player exit as completed playback.
+
+The feature currently requires desktop mpv on POSIX systems. VLC, IINA, custom
+players, Windows named-pipe mpv control, and Android intent players do not
+expose the same reliable completion signal through ani-py, so `--auto-next`
+refuses those combinations instead of guessing.
+
+Set `ANI_PY_AUTO_NEXT=1` to make the flag the environment default.
 
 ## Termux / Android
 
