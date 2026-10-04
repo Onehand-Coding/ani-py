@@ -31,10 +31,11 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Callable, Iterable, NoReturn, Optional, Sequence, TypedDict
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, quote_plus, urlencode, urljoin, urlsplit
@@ -44,6 +45,25 @@ APP_NAME = "ani-py"
 # Monotonic by construction and comparable across automated release snapshots.
 # Bump it in the same commit as the change - see "Versioning" in CONTRIBUTING.md.
 VERSION = "2026.10.4"
+# How many consecutive failed mpv IPC polls wait_for_completion tolerates before
+# declaring the socket dead. mpv answers "property unavailable" for a few
+# milliseconds after its socket appears but before the first file loads, so one
+# failed poll must never be mistaken for a closed player. At the default 0.2s
+# poll interval this is a ~5s grace period.
+IPC_GRACE_POLLS = 25
+# How long a stream may sit in mpv's cache-retry state before it is treated as
+# stalled rather than slow. Long episodes never trip this: it only counts
+# continuous paused-for-cache time.
+IPC_STALL_SECONDS = 45
+# One shared rejection message: --auto-next cannot work without a completion
+# signal, and the user should learn that before a search, not after.
+AUTO_NEXT_UNSUPPORTED = (
+    "--auto-next requires desktop mpv with private IPC. "
+    "VLC, IINA, custom players, Windows named-pipe IPC, and Android "
+    "intent players do not expose a reliable natural-EOF signal to ani-py."
+)
+# Default ceiling on --auto-next queue length; 0 disables the ceiling.
+AUTO_NEXT_DEFAULT_LIMIT = 12
 BASE_URL = "https://hianime.at"
 ANILIGHT_BASE_URL = "https://anilight.live"
 ANILIGHT_API_URL = "https://api.anilight.live/api"
@@ -128,9 +148,62 @@ def warn(message: str) -> None:
     print(f"{sty('!', C.YELLOW)} {message}", file=sys.stderr)
 
 
-def fail(message: str, code: int = 1) -> "None":
+def fail(message: str, code: int = 1) -> NoReturn:
     print(f"{sty('error', C.BOLD, C.RED)}  {message}", file=sys.stderr)
     raise SystemExit(code)
+
+
+def clock(seconds: float) -> str:
+    """m:ss, widening to h:mm:ss only when needed."""
+    total = int(max(0.0, seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+class NowPlaying:
+    """Live "now playing" display for unattended playback.
+
+    Auto-next hands the terminal back to the user for as long as an episode
+    runs, and the banner printed at the start of an episode is never seen again.
+    This redraws one line in place so the current episode, its position and what
+    comes next stay visible, and mirrors a short form into the terminal tab
+    title so the state is readable when the terminal is not focused.
+
+    Both go to stderr, where the rest of the progress output goes, so ordering
+    survives redirection. Everything is suppressed when stderr is not a
+    terminal: piped output and log files must not gain carriage returns or
+    escape sequences.
+    """
+
+    def __init__(self) -> None:
+        self.enabled = sys.stderr.isatty()
+        self._drawn = False
+        self._last = 0.0
+
+    def title(self, text: str) -> None:
+        if not self.enabled:
+            return
+        print(f"\033]2;{text}\007", end="", file=sys.stderr, flush=True)
+
+    def update(self, line: str, interval: float = 0.5) -> None:
+        """Redraw the status line, at most every `interval` seconds."""
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        if self._drawn and now - self._last < interval:
+            return
+        self._last = now
+        self._drawn = True
+        print("\r\033[K" + line, end="", file=sys.stderr, flush=True)
+
+    def clear(self) -> None:
+        if not self.enabled or not self._drawn:
+            return
+        self._drawn = False
+        print("\r\033[K", end="", file=sys.stderr, flush=True)
 
 
 # ---------- models / provider contracts ----------
@@ -207,6 +280,12 @@ class HistoryEntry:
     provider: str
     provider_id: str
     title: str
+    # Whether that episode was watched to the end. Rows written before this
+    # field existed have no such information and are read as completed, which
+    # reproduces the behaviour those rows were written under: `--continue`
+    # advances to the next episode. Defaulting them the other way would make
+    # an already-finished episode replay from its first frame.
+    completed: bool = True
 
     @property
     def anime_slug(self) -> str:
@@ -423,15 +502,44 @@ class HttpClient:
             raise HttpError(f"Network request failed for {url}: {detail}")
         return proc.stdout
 
-    def get_json(self, url: str, **kwargs: object) -> object:
-        body = self.get(url, **kwargs)
+    def get_json(
+        self,
+        url: str,
+        *,
+        referer: Optional[str] = None,
+        headers: Optional[dict[str, str]] = None,
+        timeout: int = 15,
+        cookie_jar: Optional[str] = None,
+    ) -> object:
+        # Explicit keywords rather than **kwargs: an object-typed catch-all
+        # makes every forwarded argument uncheckable at the call site.
+        body = self.get(
+            url, referer=referer, headers=headers, timeout=timeout, cookie_jar=cookie_jar
+        )
         try:
             return json.loads(body)
         except json.JSONDecodeError as exc:
             raise HttpError(f"Expected JSON from {url}") from exc
 
-    def post_json(self, url: str, payload: object, **kwargs: object) -> object:
-        body = self.request("POST", url, json_body=payload, **kwargs)
+    def post_json(
+        self,
+        url: str,
+        payload: object,
+        *,
+        referer: Optional[str] = None,
+        headers: Optional[dict[str, str]] = None,
+        timeout: int = 15,
+        cookie_jar: Optional[str] = None,
+    ) -> object:
+        body = self.request(
+            "POST",
+            url,
+            json_body=payload,
+            referer=referer,
+            headers=headers,
+            timeout=timeout,
+            cookie_jar=cookie_jar,
+        )
         try:
             return json.loads(body)
         except json.JSONDecodeError as exc:
@@ -1319,6 +1427,9 @@ class HistoryStore:
         self.path = self.dir / "history.tsv"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
+        # update() is a read-modify-write, and the auto-next completion watcher
+        # writes from a background thread while the main thread may be exiting.
+        self._lock = threading.Lock()
 
     def load(self) -> list[HistoryEntry]:
         out: list[HistoryEntry] = []
@@ -1327,7 +1438,14 @@ class HistoryStore:
             if len(parts) >= 4:
                 episode, provider, provider_id = parts[:3]
                 title = "\t".join(parts[3:])
-                out.append(HistoryEntry(episode, provider, provider_id, title))
+                completed = True
+                # Titles may legitimately contain tabs, so the state token is
+                # recognised by shape at the end rather than by field position.
+                head, sep, tail = title.rpartition("\t")
+                if sep and head and tail in ("state=0", "state=1"):
+                    title = head
+                    completed = tail == "state=1"
+                out.append(HistoryEntry(episode, provider, provider_id, title, completed))
             elif len(parts) == 3:
                 # v0.3 and older: episode, HiAnime slug, title
                 episode, provider_id, title = parts
@@ -1336,25 +1454,31 @@ class HistoryStore:
 
     def save(self, entries: Sequence[HistoryEntry]) -> None:
         data = "".join(
-            f"{e.episode}\t{e.provider}\t{e.provider_id}\t{e.title}\n" for e in entries
+            f"{e.episode}\t{e.provider}\t{e.provider_id}\t{e.title}"
+            f"\tstate={1 if e.completed else 0}\n"
+            for e in entries
         )
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.dir, delete=False) as tf:
             tf.write(data)
             temp_name = tf.name
         Path(temp_name).replace(self.path)
 
-    def update(self, anime: Anime, episode: str) -> None:
-        entries = self.load()
-        replaced = False
-        for item in entries:
-            if item.provider == anime.provider and item.provider_id == anime.provider_id:
-                item.episode = episode
-                item.title = anime.title
-                replaced = True
-                break
-        if not replaced:
-            entries.append(HistoryEntry(episode, anime.provider, anime.provider_id, anime.title))
-        self.save(entries)
+    def update(self, anime: Anime, episode: str, completed: bool = False) -> None:
+        with self._lock:
+            entries = self.load()
+            replaced = False
+            for item in entries:
+                if item.provider == anime.provider and item.provider_id == anime.provider_id:
+                    item.episode = episode
+                    item.title = anime.title
+                    item.completed = completed
+                    replaced = True
+                    break
+            if not replaced:
+                entries.append(
+                    HistoryEntry(episode, anime.provider, anime.provider_id, anime.title, completed)
+                )
+            self.save(entries)
 
     def clear(self) -> None:
         self.path.write_text("", encoding="utf-8")
@@ -2059,6 +2183,164 @@ class AndroidRelayEndpoint:
 
 # ---------- player / downloader ----------
 
+class _IpcSession:
+    """One persistent mpv IPC connection carrying both replies and events.
+
+    mpv's input-ipc-server accepts a single client at a time and pushes
+    unsolicited events (notably ``end-file``) only to a client that happens to
+    be connected when they fire. A connect/disconnect-per-command client
+    therefore silently drops every event in between, which is why polling
+    ``eof-reached`` was both slow to notice EOF and prone to reading a stale
+    ``True`` from the file that just finished. One connection is held for the
+    whole episode and multiplexes replies (matched by ``request_id``) with
+    events.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._cv = threading.Condition()
+        self._sock: Optional[socket.socket] = None
+        self._replies: dict[int, Optional[dict]] = {}
+        self._next_id = 1
+        self._end_seq = 0
+        self._end_reason: Optional[str] = None
+        self._closed = False
+
+    def open(self) -> bool:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        try:
+            sock.connect(str(self.path))
+        except OSError:
+            sock.close()
+            return False
+        self._sock = sock
+        threading.Thread(target=self._read_loop, daemon=True).start()
+        return True
+
+    def _read_loop(self) -> None:
+        buf = b""
+        while not self._closed:
+            sock = self._sock
+            if sock is None:
+                break
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line.decode("utf-8", errors="replace"))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                with self._cv:
+                    if "event" in msg:
+                        if msg.get("event") == "end-file":
+                            self._end_reason = msg.get("reason")
+                            self._end_seq += 1
+                    elif "request_id" in msg:
+                        self._replies[msg["request_id"]] = msg
+                    self._cv.notify_all()
+        with self._cv:
+            self._closed = True
+            self._cv.notify_all()
+
+    def command(self, command: list[object], timeout: float = 2.0) -> object:
+        sock = self._sock
+        if sock is None:
+            raise RuntimeError("mpv IPC session is not open")
+        with self._cv:
+            if self._closed:
+                raise RuntimeError("mpv IPC session is closed")
+            rid = self._next_id
+            self._next_id += 1
+            self._replies[rid] = None
+        try:
+            sock.sendall((json.dumps({"command": command, "request_id": rid}) + "\n").encode("utf-8"))
+        except OSError:
+            with self._cv:
+                self._replies.pop(rid, None)
+            raise
+        deadline = time.monotonic() + timeout
+        with self._cv:
+            while True:
+                reply = self._replies.get(rid)
+                if reply is not None:
+                    self._replies.pop(rid, None)
+                    if reply.get("error") != "success":
+                        raise RuntimeError(str(reply.get("error")))
+                    return reply.get("data")
+                if self._closed:
+                    self._replies.pop(rid, None)
+                    raise RuntimeError("mpv IPC connection closed")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._replies.pop(rid, None)
+                    raise RuntimeError("no reply from mpv")
+                self._cv.wait(remaining)
+
+    def end_file_seq(self) -> int:
+        with self._cv:
+            return self._end_seq
+
+    def is_closed(self) -> bool:
+        with self._cv:
+            return self._closed
+
+    def wait_end_file(self, after: int, timeout: float) -> Optional[str]:
+        """Wait for an end-file event newer than the `after` sequence."""
+        deadline = time.monotonic() + timeout
+        with self._cv:
+            while True:
+                if self._end_seq > after:
+                    return self._end_reason
+                if self._closed:
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._cv.wait(remaining)
+
+    def close(self) -> None:
+        with self._cv:
+            self._closed = True
+        sock, self._sock = self._sock, None
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sock.close()
+        with self._cv:
+            self._cv.notify_all()
+
+
+class PlayKw(TypedDict):
+    """Exact keyword set shared by Playback.play and Playback.replace.
+
+    Naming the keys keeps `play(**kwargs)` precisely checkable; an untyped dict
+    expands as "any string key is possible", which is neither true nor useful.
+    """
+
+    title: str
+    subtitle: Optional[str]
+    referer: str
+    mal_id: Optional[str]
+    episode: str
+    subtitle_language: Optional[str]
+    subtitle_label: Optional[str]
+
+
 class Playback:
     """Launch players and own one private mpv IPC endpoint.
 
@@ -2074,10 +2356,18 @@ class Playback:
         self.player = self._detect_player()
         self.proc: Optional[subprocess.Popen] = None
         self.ipc_path: Optional[Path] = None
+        self._session: Optional[_IpcSession] = None
+        # Auto-next needs mpv to end files instead of pausing on them, so that
+        # end-file events are emitted and can be told apart from failures.
+        self.event_completion = False
         self._detached = False
         self._android_launched = False
         self._android_relay_proc: Optional[subprocess.Popen] = None
         self._android_relay_dir: Optional[Path] = None
+        # ani-skip flags are per (mal id, episode) and cost a subprocess call,
+        # so remember them; replace() needs to know whether the *next* episode
+        # actually produced flags before choosing an in-place or fresh process.
+        self._skip_cache: dict[tuple[Optional[str], str], list[str]] = {}
 
     def _detect_player(self) -> str:
         if self.args.download:
@@ -2126,17 +2416,115 @@ class Playback:
         """Whether playback exposes a reliable natural-EOF signal."""
         return self._is_mpv() and self._ipc_supported()
 
-    def wait_for_completion(self, poll_interval: float = 0.2) -> str:
+    def reached_eof(self) -> Optional[bool]:
+        """True/False if mpv could be asked, None if it cannot be reached.
+
+        The None case matters: once the player is gone the answer is unknown,
+        not false. Callers must not turn "cannot ask" into "did not finish",
+        or an episode that really did finish would be recorded as unfinished.
+        """
+        session = self._session
+        if session is None:
+            return None
+        try:
+            value = session.command(["get_property", "eof-reached"], timeout=0.6)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            return None
+        # A non-boolean answer is "unknown", not "not finished": returning
+        # False here would let an exit-path record overwrite a real finish.
+        return value if isinstance(value, bool) else None
+
+    def progress(self) -> Optional[tuple[float, float]]:
+        """Current (position, duration) in seconds, or None when unknown.
+
+        Duration is 0.0 for live/segmented streams that do not report one.
+        """
+        session = self._session
+        if session is None:
+            return None
+        try:
+            position = session.command(["get_property", "time-pos"], timeout=0.5)
+            duration = session.command(["get_property", "duration"], timeout=0.5)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            return None
+        if not isinstance(position, (int, float)):
+            return None
+        span = float(duration) if isinstance(duration, (int, float)) else 0.0
+        return float(position), span
+
+    def wait_for_completion(
+        self, poll_interval: float = 0.2, on_wait: Optional[Callable[[], None]] = None
+    ) -> str:
         """Wait for the current mpv item to finish.
 
-        Returns "eof" only when mpv reports that the media reached its
-        natural end. Any manual stop/close, player exit, or IPC loss returns
-        "closed" so callers never guess that an interrupted episode was
-        completed.
+        Returns "eof" only when mpv reports that the media reached its natural
+        end. A manual stop/close or player exit returns "closed", a stream that
+        ended in an error returns "failed", a source that stopped delivering
+        bytes returns "stalled"; a socket that stops answering while the
+        process is still alive returns "ipc-lost". Callers never guess that an
+        interrupted episode was completed.
+
+        With a live IPC session this waits for mpv's ``end-file`` event, whose
+        ``reason`` distinguishes a real EOF from an error, a quit, or a
+        replacement. Polling ``eof-reached`` cannot make that distinction and is
+        racy in three ways: the property is briefly unavailable while a file is
+        swapping, it can still read ``True`` from the file that just finished
+        right after a loadfile, and it becomes permanently unavailable once mpv
+        unloads at the end. It remains only as a fallback for a socket ani-py
+        could not hold open (an adopted detached session).
         """
         if not self.auto_next_supported() or self.ipc_path is None:
             return "unsupported"
+        session = self._session
+        if session is not None:
+            return self._wait_end_file(session, on_wait)
+        return self._wait_eof_poll(poll_interval, on_wait)
 
+    def _wait_end_file(self, session: _IpcSession, on_wait=None) -> str:
+        seq = session.end_file_seq()
+        stalled_for = 0.0
+        while True:
+            proc = self.proc
+            if proc is not None and proc.poll() is not None:
+                self.proc = None
+                self._cleanup_ipc()
+                return "closed"
+            reason = session.wait_end_file(seq, timeout=0.5)
+            if on_wait is not None:
+                on_wait()
+            if reason is not None:
+                if reason in ("eof", "eof-explicit"):
+                    return "eof"
+                if reason == "error":
+                    return "failed"
+                return "closed"
+            if session.is_closed():
+                proc = self.proc
+                if proc is not None and proc.poll() is not None:
+                    self.proc = None
+                    self._cleanup_ipc()
+                    return "closed"
+                self._cleanup_ipc()
+                return "ipc-lost"
+            # mpv retries a stalled source itself and never ends the file, so
+            # end-file alone would wait forever. Its retry flaps the cache flag
+            # on and off, so accumulate buffered time instead of requiring an
+            # unbroken run; a healthy episode barely pauses for cache at all.
+            try:
+                paused = session.command(["get_property", "paused-for-cache"], timeout=0.8)
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+                paused = None
+            # Plain truth test: None (player unreachable) and False both mean
+            # "not buffering", and only a confirmed True accumulates.
+            if paused:
+                stalled_for += 0.5
+                if stalled_for > IPC_STALL_SECONDS:
+                    return "stalled"
+            else:
+                stalled_for = 0.0
+
+    def _wait_eof_poll(self, poll_interval: float, on_wait=None) -> str:
+        missed = 0
         while True:
             proc = self.proc
             if proc is not None and proc.poll() is not None:
@@ -2150,9 +2538,16 @@ class Playback:
                 if proc is not None and proc.poll() is not None:
                     self.proc = None
                     self._cleanup_ipc()
-                return "closed"
-            if reached is True:
-                return "eof"
+                    return "closed"
+                missed += 1
+                if missed > IPC_GRACE_POLLS:
+                    return "ipc-lost"
+            else:
+                missed = 0
+                if reached is True:
+                    return "eof"
+            if on_wait is not None:
+                on_wait()
             if poll_interval > 0:
                 time.sleep(poll_interval)
 
@@ -2470,9 +2865,21 @@ class Playback:
         Current ani-skip accepts a known MyAnimeList id directly with -i/--id.
         A missing MAL id or a failing ani-skip invocation should never fail
         playback, but it must be visible instead of silently disabling --skip.
+
+        Results are cached per episode: replace() asks whether the next episode
+        produced flags before choosing an in-place or fresh process, and
+        _mpv_command needs the same answer again.
         """
         if not self.args.skip:
             return []
+        key = (mal_id, episode)
+        if key in self._skip_cache:
+            return list(self._skip_cache[key])
+        flags = self._fetch_skip_args(mal_id, episode)
+        self._skip_cache[key] = flags
+        return list(flags)
+
+    def _fetch_skip_args(self, mal_id: Optional[str], episode: str) -> list[str]:
         if not mal_id:
             warn("--skip requested, but the provider did not expose a MAL id for this episode.")
             return []
@@ -2504,6 +2911,9 @@ class Playback:
         return root / f"ani-py-{uid}-{os.getpid()}.sock"
 
     def _ipc(self, command: list[object], timeout: float = 2.0) -> object:
+        session = self._session
+        if session is not None:
+            return session.command(command, timeout)
         if self.ipc_path is None:
             raise RuntimeError("mpv IPC is not active")
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -2533,6 +2943,16 @@ class Playback:
         finally:
             sock.close()
 
+    def _open_ipc_session(self) -> bool:
+        """Hold mpv's one allowed IPC connection open for event delivery."""
+        if not self._ipc_supported() or self.ipc_path is None or self._session is not None:
+            return False
+        session = _IpcSession(self.ipc_path)
+        if not session.open():
+            return False
+        self._session = session
+        return True
+
     def _wait_ipc(self, timeout: float = 4.0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -2544,6 +2964,79 @@ class Playback:
             except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
                 time.sleep(0.08)
         return False
+
+    def _wait_loaded(self, timeout: float = 5.0) -> bool:
+        """Wait until mpv has a file loaded, not merely a live socket.
+
+        mpv answers `get_property path` with a null value (and no error) before
+        the first file is opened, so _wait_ipc succeeding does not mean
+        playback state is readable yet.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.proc is not None and self.proc.poll() is not None:
+                return False
+            try:
+                if self._ipc(["get_property", "path"], timeout=0.5):
+                    return True
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+                pass
+            time.sleep(0.08)
+        return False
+
+    def _reset_resumed_position(self, tolerance: float = 1.0) -> bool:
+        """Seek back to the start when mpv restored a finished position.
+
+        With `save-position-on-quit` in the user's mpv config, relaunching a
+        file already watched to the end resumes at the end, so mpv reports
+        natural EOF immediately. That is a real EOF, but for --auto-next it
+        means the whole queue is skipped in under a second. Rewinding keeps the
+        episode watchable; a genuine in-progress resume is left alone.
+        """
+        if not self._is_mpv() or self.ipc_path is None:
+            return False
+        try:
+            position = self._ipc(["get_property", "time-pos"], timeout=0.6)
+            duration = self._ipc(["get_property", "duration"], timeout=0.6)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            return False
+        if not isinstance(position, (int, float)) or not isinstance(duration, (int, float)):
+            return False
+        if duration <= 0 or position < duration - tolerance:
+            return False
+        try:
+            self._ipc(["set_property", "time-pos", 0.0], timeout=0.6)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            return False
+        return True
+
+    def _clear_external_subtitles(self) -> None:
+        """Drop external subtitle tracks left behind by the previous episode.
+
+        Embedded tracks belong to the file mpv is now playing and stay; only
+        ani-py-added external tracks are removed so a new episode cannot fall
+        back to the last one's subtitles.
+        """
+        try:
+            tracks = self._ipc(["get_property", "track-list"], timeout=0.6)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            return
+        if not isinstance(tracks, list):
+            return
+        ids: list[int] = []
+        for track in tracks:
+            if not isinstance(track, dict):
+                continue
+            if track.get("type") != "sub" or not track.get("external"):
+                continue
+            track_id = track.get("id")
+            if isinstance(track_id, int):
+                ids.append(track_id)
+        for track_id in sorted(ids, reverse=True):
+            try:
+                self._ipc(["sub-remove", track_id], timeout=0.6)
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+                pass
 
     def _wait_path(self, expected: str, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -2563,8 +3056,11 @@ class Playback:
             return self._android_launched and relay_alive
         if not self._is_mpv() or self.ipc_path is None:
             return self.proc is not None and self.proc.poll() is None
+        # `path` is unavailable while mpv is idle with nothing loaded, which is
+        # exactly the state auto-next sits in between episodes, so probe a
+        # property that always exists instead of concluding mpv is gone.
         try:
-            self._ipc(["get_property", "path"], timeout=0.4)
+            self._ipc(["get_property", "idle-active"], timeout=0.4)
             return True
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
             return False
@@ -2642,7 +3138,13 @@ class Playback:
         self._detached = True
         self.proc = None
 
+    def _close_session(self) -> None:
+        session, self._session = self._session, None
+        if session is not None:
+            session.close()
+
     def _cleanup_ipc(self) -> None:
+        self._close_session()
         path = self.ipc_path
         if path is not None:
             try:
@@ -2693,10 +3195,17 @@ class Playback:
             ipc_args = [f"--input-ipc-server={self.ipc_path}"]
         else:
             self.ipc_path = None
+        # Auto-next waits for mpv's end-file event, which mpv only emits when
+        # it actually ends a file. With --keep-open=yes it just pauses at the
+        # end instead, so the event never arrives; --idle=yes keeps the process
+        # alive to load the next episode into.
+        if self.event_completion:
+            keep_open = False
         cmd = [
             self.player,
             *ipc_args,
             f"--keep-open={'yes' if keep_open else 'no'}",
+            *(["--idle=yes"] if self.event_completion else []),
             "--video=auto",
             "--vid=auto",
             f"--referrer={referer}",
@@ -2754,6 +3263,9 @@ class Playback:
             # Never leave two ani-py-owned mpv instances around.
             if self.active():
                 self.stop()
+            # A session left over from a player that already exited would keep
+            # every later _ipc call pointed at a dead socket.
+            self._close_session()
             cmd = self._mpv_command(
                 stream, title=title, subtitle=subtitle, referer=referer,
                 mal_id=mal_id, episode=episode, keep_open=keep_open,
@@ -2790,8 +3302,19 @@ class Playback:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        if "mpv" in basename and self.ipc_path is not None and not self._wait_ipc():
-            warn("mpv started, but ani-py could not connect to its private IPC socket.")
+        if "mpv" in basename and self.ipc_path is not None:
+            if not self._wait_ipc():
+                warn("mpv started, but ani-py could not connect to its private IPC socket.")
+            else:
+                # mpv pushes end-file only to a connected client, so hold the
+                # single allowed connection open before the first file can end.
+                self._open_ipc_session()
+                # A live socket is not a loaded file; wait for the real thing so
+                # playback state is readable and a resumed EOF position can be
+                # caught before it looks like a completed episode.
+                self._wait_loaded()
+                if self._reset_resumed_position():
+                    warn("mpv resumed a saved position at the end of this file; restarting it from the beginning.")
         return 0
 
     def replace(
@@ -2807,9 +3330,12 @@ class Playback:
         subtitle_label: Optional[str] = None,
     ) -> int:
         """Replace the current mpv item in-place; restart only as a fallback."""
-        if not self._is_mpv() or not self._ipc_supported() or self.args.skip or not self.active():
-            # --skip may carry episode-specific mpv flags, so a fresh process is
-            # safer than trying to mutate unknown script options over IPC.
+        # ani-skip flags are episode-specific mpv options that cannot be changed
+        # reliably over IPC, so an episode that actually produced flags needs a
+        # fresh process. With no flags to apply, in-place is safe and keeps the
+        # window (and the IPC socket) alive across episodes.
+        skip_flags = self._skip_args(mal_id, episode) if self.args.skip else []
+        if not self._is_mpv() or not self._ipc_supported() or skip_flags or not self.active():
             if self.active():
                 self.stop()
             return self.play(
@@ -2829,6 +3355,9 @@ class Playback:
             self._ipc(["loadfile", stream.url, "replace"])
             self._wait_path(stream.url)
             self._ipc(["set_property", "force-media-title", title])
+            self._clear_external_subtitles()
+            if self._reset_resumed_position():
+                warn("mpv resumed a saved position at the end of this file; restarting it from the beginning.")
             if subtitle:
                 self._ipc(["sub-add", subtitle, "select"])
             return 0
@@ -3138,12 +3667,14 @@ class App:
         ok(f"Selected {chosen.title}  [{provider.display_name}]")
         return chosen
 
-    def _from_history(self) -> tuple[Anime, str]:
+    def _from_history(self) -> tuple[Anime, str, bool]:
         entries = self.history.load()
         if not entries:
             fail("History is empty.")
         rows = [
-            f"{e.title}  {sty('•', C.DIM)}  last watched {e.episode}  {sty('• ' + e.provider, C.DIM)}"
+            f"{e.title}  {sty('•', C.DIM)}  Episode {e.episode} "
+            f"{'watched' if e.completed else 'unfinished'}  "
+            f"{sty('• ' + e.provider, C.DIM)}"
             for e in entries
         ]
         mapping = dict(zip(rows, entries))
@@ -3162,7 +3693,11 @@ class App:
             else:
                 fail("History selection did not match any entry.")
                 raise SystemExit(1)
-        return Anime(entry.provider_id, entry.title, entry.provider), entry.episode
+        return (
+            Anime(entry.provider_id, entry.title, entry.provider),
+            entry.episode,
+            entry.completed,
+        )
 
     @staticmethod
     def _match_score(left: str, right: str) -> float:
@@ -3256,7 +3791,7 @@ class App:
             return fallback, self._episodes(fallback)
 
     def _pick_episodes(
-        self, anime: Anime, continue_after: Optional[str]
+        self, anime: Anime, continue_after: Optional[str], continue_completed: bool = True
     ) -> tuple[Anime, list[Episode], list[Episode]]:
         status("Loading episodes")
         try:
@@ -3268,9 +3803,17 @@ class App:
 
         if continue_after is not None:
             idx = episode_index(episodes, continue_after)
-            if idx is None or idx + 1 >= len(episodes):
+            if idx is None:
                 fail("No unwatched episode is available in history.")
-            return anime, episodes, [episodes[idx + 1]]
+            # An episode that was started but never finished is resumed, not
+            # skipped: mpv restores its saved position. Only a completed one
+            # advances. Legacy rows without a completion flag read as
+            # completed, so they keep advancing exactly as they did before.
+            if continue_completed:
+                if idx + 1 >= len(episodes):
+                    fail("No unwatched episode is available in history.")
+                return anime, episodes, [episodes[idx + 1]]
+            return anime, episodes, [episodes[idx]]
 
         if self.args.episode:
             selected = parse_episode_spec(self.args.episode, episodes)
@@ -3516,6 +4059,8 @@ class App:
         foreground: bool = False,
         keep_open: bool = True,
     ) -> int:
+        # Guarded up front: the episode banner reads self.playback.player.
+        assert self.playback is not None
         bundle = self._bundle(anime, episode)
         stream = choose_quality(bundle.streams, quality)
         subtitle_track = choose_subtitle_track(bundle, self.subtitle_preference)
@@ -3546,9 +4091,7 @@ class App:
             subtitle_name += f" [{subtitle_track.language}]"
         print(f"  {sty('Subtitle', C.DIM)} {subtitle_name}")
         print()
-        assert self.playback is not None
-        play_fn = self.playback.replace if replace else self.playback.play
-        play_kwargs = dict(
+        play_kwargs = PlayKw(
             title=f"{anime.title} Episode {episode.number}",
             subtitle=subtitle_track.url if subtitle_track else None,
             referer=bundle.referer,
@@ -3558,12 +4101,79 @@ class App:
             subtitle_label=subtitle_track.label if subtitle_track else None,
         )
         if replace:
-            rc = play_fn(stream, **play_kwargs)
+            rc = self.playback.replace(stream, **play_kwargs)
         else:
-            rc = play_fn(stream, foreground=foreground, keep_open=keep_open, **play_kwargs)
+            rc = self.playback.play(
+                stream, foreground=foreground, keep_open=keep_open, **play_kwargs
+            )
         if rc == 0:
-            self.history.update(anime, episode.number)
+            # Recorded as unfinished at launch: --continue resumes this episode
+            # rather than skipping past whatever is left of it.
+            self.history.update(anime, episode.number, completed=False)
+            if (
+                not foreground
+                and self.playback is not None
+                and not self.playback._is_android()
+            ):
+                # Foreground playback blocks until mpv exits, so the watcher is
+                # only needed for the detached case.
+                self._watch_completion(anime, episode)
         return rc
+
+    def _stop_completion_watch(self) -> None:
+        stop = getattr(self, "_completion_stop", None)
+        if stop is not None:
+            stop.set()
+
+    def _watch_completion(self, anime: Anime, episode: Episode) -> None:
+        """Record completion as soon as mpv reaches EOF.
+
+        Closing the mpv window is an external event: there is no exit path to
+        hook, and once the process is gone its end-of-file state cannot be
+        queried. Recording at the moment it is observed means the last known
+        state survives an abrupt close, instead of every window-closed episode
+        looking unfinished.
+        """
+        self._stop_completion_watch()
+        stop = threading.Event()
+        self._completion_stop = stop
+        playback = self.playback
+        number = episode.number
+
+        def watch() -> None:
+            while not stop.is_set():
+                try:
+                    reached = playback is not None and playback.reached_eof()
+                except Exception:  # noqa: BLE001 - a watcher must never crash
+                    reached = False
+                # Both None (player gone) and False mean "not proven finished",
+                # so a plain truth test is correct here; the tri-state only
+                # matters in _record_completion, which must not overwrite a
+                # recorded finish with an unknown.
+                if reached:
+                    self.history.update(anime, number, completed=True)
+                    return
+                # Short enough that closing the window in the moment after an
+                # episode ends still finds the recorded state.
+                stop.wait(1.0)
+
+        threading.Thread(target=watch, daemon=True).start()
+
+    def _record_completion(self, anime: Anime, episode: Episode) -> None:
+        """Persist whether the episode being left actually reached its end.
+
+        Only mpv knows this. Without it, finishing an episode normally would
+        leave history marked unfinished and `--continue` would replay it.
+        """
+        playback = self.playback
+        if playback is None:
+            return
+        reached = playback.reached_eof()
+        if reached is None:
+            # The player is already gone, so this says nothing. Keep whatever
+            # the completion watcher recorded while it was still reachable.
+            return
+        self.history.update(anime, episode.number, completed=reached)
 
     def _interactive_loop(self, anime: Anime, episodes: list[Episode], current: Episode, quality: str) -> None:
         if self.args.download or self.args.exit_after_play:
@@ -3595,16 +4205,24 @@ class App:
                 header=header,
             )
             if not picked:
+                # Leaving the episode: record what mpv actually saw, because
+                # this is the normal way ani-py is closed after a long watch.
+                self._record_completion(anime, current)
                 return
             action = picked[0]
             idx = episode_index(episodes, current.number)
             if idx is None:
+                self._record_completion(anime, current)
                 return
             if action == "Stop & quit":
+                # Recorded before stopping: once mpv is gone its end-of-file
+                # state is unknowable and every episode would look unfinished.
+                self._record_completion(anime, current)
                 self._clear_detached_session()
                 self.playback.stop()
                 return
             if action == "Detach & exit":
+                self._record_completion(anime, current)
                 saved = self._save_detached_session(anime, current, quality)
                 self.playback.detach()
                 if saved:
@@ -3703,18 +4321,28 @@ class App:
 
     @staticmethod
     def _auto_next_queue(
-        episodes: Sequence[Episode], selected: Sequence[Episode]
+        episodes: Sequence[Episode], selected: Sequence[Episode], limit: int = 0
     ) -> list[Episode]:
         """Build the provider-independent playback queue.
 
-        An explicit multi-episode selection/range is respected exactly. A
-        single selected episode means "start here and continue" through the
-        already-loaded episode list.
+        An explicit multi-episode selection/range is respected exactly and is
+        never trimmed. A single selected episode means "start here and
+        continue" through the already-loaded episode list, and that expansion is
+        the only case `limit` caps, so one selection cannot silently become
+        hundreds of episodes. `limit` of 0 means no cap. Trimming always
+        announces what it dropped.
         """
         if len(selected) != 1:
             return list(selected)
         idx = episode_index(episodes, selected[0].number)
-        return list(episodes[idx:]) if idx is not None else list(selected)
+        queue = list(episodes[idx:]) if idx is not None else list(selected)
+        if limit > 0 and len(queue) > limit:
+            warn(
+                f"Auto-next queue limited to {limit} episode(s) by --auto-next-limit; "
+                f"{len(queue) - limit} later episode(s) will not be queued."
+            )
+            queue = queue[:limit]
+        return queue
 
     def _run_auto_next(
         self,
@@ -3725,13 +4353,13 @@ class App:
     ) -> int:
         assert self.playback is not None
         if not self.playback.auto_next_supported():
-            fail(
-                "--auto-next requires desktop mpv with private IPC. "
-                "VLC, IINA, custom players, Windows named-pipe IPC, and Android "
-                "intent players do not expose a reliable natural-EOF signal to ani-py."
-            )
+            fail(AUTO_NEXT_UNSUPPORTED)
+        # Completion is detected from mpv's end-file event, which needs mpv to
+        # end files rather than pause on them.
+        self.playback.event_completion = True
 
-        queue = self._auto_next_queue(episodes, selected)
+        limit = max(0, getattr(self.args, "auto_next_limit", 0) or 0)
+        queue = self._auto_next_queue(episodes, selected, limit)
         if not queue:
             return 0
 
@@ -3739,8 +4367,14 @@ class App:
             f"Auto-next: {len(queue)} episode{'s' if len(queue) != 1 else ''} "
             "(provider-independent, desktop mpv)"
         )
+        now = NowPlaying()
+        now.title(f"▶ {anime.title}")
         try:
             for index, episode in enumerate(queue):
+                upcoming = queue[index + 1] if index + 1 < len(queue) else None
+                now.title(
+                    f"▶ {anime.title} · Ep {episode.number} ({index + 1}/{len(queue)})"
+                )
                 rc = self._play_episode(
                     anime,
                     episode,
@@ -3754,10 +4388,34 @@ class App:
                 if index > 0 and not self.playback.resume():
                     warn("Auto-next loaded the next episode but could not resume mpv.")
 
-                completion = self.playback.wait_for_completion()
+                completion = self.playback.wait_for_completion(
+                    on_wait=lambda e=episode, u=upcoming, i=index: self._draw_status(
+                        now, anime, e, i + 1, len(queue), u
+                    )
+                )
+                now.clear()
+                if completion == "ipc-lost":
+                    warn("Lost contact with mpv; stopping the auto-next queue.")
+                elif completion == "stalled":
+                    warn(
+                        "Episode "
+                        f"{episode.number}'s stream stopped responding; "
+                        "stopping the auto-next queue."
+                    )
+                elif completion == "failed":
+                    warn(
+                        "mpv reported the stream ended in an error for "
+                        f"Episode {episode.number}; stopping the auto-next queue."
+                    )
+                elif completion == "unsupported":
+                    warn("mpv IPC became unavailable; stopping the auto-next queue.")
                 if completion != "eof":
                     self.playback.stop()
                     return 0
+
+                # Natural EOF is the only proof the episode was actually
+                # finished, so this is the only place history is marked done.
+                self.history.update(anime, episode.number, completed=True)
 
                 if index + 1 >= len(queue):
                     self.playback.stop()
@@ -3773,6 +4431,43 @@ class App:
             self.playback.stop()
             raise
         return 0
+
+    def _draw_status(
+        self,
+        now: NowPlaying,
+        anime: Anime,
+        episode: Episode,
+        position: int,
+        total: int,
+        upcoming: Optional[Episode],
+    ) -> None:
+        """Refresh the in-place now-playing line for the current episode."""
+        if not now.enabled:
+            return
+        # The episode's own number and its position in the queue are different
+        # things whenever playback starts mid-season, so they are never shown
+        # as one ratio: "Ep 19/8" would read as "19 out of 8".
+        parts = [
+            f"{sty('▶', C.CYAN)} {anime.title}",
+            sty(f"Ep {episode.number} ({position}/{total})", C.DIM),
+        ]
+        playback = self.playback
+        if playback is not None:
+            marks = playback.progress()
+            if marks is not None:
+                # `position` above is the place in the queue; the playback
+                # offset is a different quantity and must not reuse the name.
+                offset, span = marks
+                if span > 0:
+                    parts.append(f"{clock(offset)}/{clock(span)} ({offset * 100 // span:.0f}%)")
+                else:
+                    parts.append(clock(offset))
+        if upcoming is not None:
+            parts.append(sty(f"→ Ep {upcoming.number}", C.DIM))
+        line = "  ".join(parts)
+        # ceiling: term_width is capped at the banner width; longer lines are
+        # simply not truncated because a wrapped status line redraws badly.
+        now.update(line)
 
     def run(self) -> int:
         if self.args.clear_history:
@@ -3806,6 +4501,10 @@ class App:
                 fail("--auto-next cannot be combined with --no-detach.")
             if self.args.exit_after_play:
                 fail("--auto-next cannot be combined with --exit-after-play.")
+            # Reject an unusable player here, before the search and episode
+            # listing spend the user's time on a run that cannot advance.
+            if self.playback is not None and not self.playback.auto_next_supported():
+                fail(AUTO_NEXT_UNSUPPORTED)
 
         if getattr(self.args, "attach", False):
             result = self._maybe_resume_detached_session(force=True)
@@ -3821,7 +4520,7 @@ class App:
                 return result
 
         if self.args.continue_watching:
-            anime, continue_after = self._from_history()
+            anime, continue_after, continue_completed = self._from_history()
         else:
             query = " ".join(self.args.query).strip()
             if not query:
@@ -3837,8 +4536,9 @@ class App:
                 return 0
             anime = self._search_anime(query)
             continue_after = None
+            continue_completed = True
 
-        anime, episodes, selected = self._pick_episodes(anime, continue_after)
+        anime, episodes, selected = self._pick_episodes(anime, continue_after, continue_completed)
 
         if getattr(self.args, "auto_next", False):
             return self._run_auto_next(anime, episodes, selected, self.args.quality)
@@ -3973,6 +4673,19 @@ def run_update(http: Optional[HttpClient] = None, target: Optional[Path] = None)
     print("re-run the installer with --deps if you are missing external tools")
     return 0
 
+def env_int(name: str, default: int) -> int:
+    """Read a non-negative integer environment variable, tolerating junk."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        warn(f"Ignoring invalid {name}={raw.strip()!r}; using {default}.")
+        return default
+    return max(0, value)
+
+
 def build_parser() -> argparse.ArgumentParser:
     formatter = argparse.RawDescriptionHelpFormatter
     parser = argparse.ArgumentParser(
@@ -3999,6 +4712,7 @@ def build_parser() -> argparse.ArgumentParser:
               ANI_PY_DOWNLOAD_DIR    download destination
               ANI_PY_SUB_LANG        preferred subtitle language/label, auto, or off
               ANI_PY_AUTO_NEXT       1 to auto-play following episodes (desktop mpv IPC)
+              ANI_PY_AUTO_NEXT_LIMIT cap on --auto-next's auto-expanded queue (0 = no limit)
               ANI_PY_HIST_DIR        state directory root
               ANI_PY_CURL            curl/curl-impersonate executable
               ANI_PY_PROVIDER        auto, hianime, or anilight
@@ -4010,7 +4724,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("query", nargs="*", help="anime search query")
-    parser.add_argument("-c", "--continue", dest="continue_watching", action="store_true", help="continue from history")
+    parser.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_watching",
+        action="store_true",
+        help="resume the last episode from history; if it was finished, start the next one",
+    )
     parser.add_argument("--attach", action="store_true", help="reattach controls to the last detached desktop mpv session")
     parser.add_argument("-d", "--download", action="store_true", help="download instead of play")
     parser.add_argument("-D", "--delete-history", dest="clear_history", action="store_true", help="clear watch history")
@@ -4049,6 +4769,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=os.getenv("ANI_PY_AUTO_NEXT", "0") == "1",
         help="auto-play following episodes after natural EOF (desktop mpv IPC only)",
+    )
+    parser.add_argument(
+        "--auto-next-limit",
+        type=int,
+        default=env_int("ANI_PY_AUTO_NEXT_LIMIT", AUTO_NEXT_DEFAULT_LIMIT),
+        help=(
+            "cap on episodes auto-expanded from a single selection, "
+            "0 for no limit (default: %(default)s); an explicit selection or "
+            "range is never trimmed"
+        ),
     )
     parser.add_argument("--no-detach", action="store_true", default=os.getenv("ANI_PY_NO_DETACH", "0") == "1", help="keep player attached")
     parser.add_argument("--exit-after-play", action="store_true", default=os.getenv("ANI_PY_EXIT_AFTER_PLAY", "0") == "1", help="exit after player closes/launches")

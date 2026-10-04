@@ -246,18 +246,73 @@ runtime design).
 
 ### mpv-first playback with private IPC
 **Choice:** mpv primary; per-process private IPC socket; episode queues
-run foreground with keep-open disabled; `--skip` forces fresh processes.
+run foreground with keep-open disabled; `--skip` forces a fresh process only
+when ani-skip actually produced flags for that episode.
 **Status:** Current
 **Reason:** In-place IPC replace can't carry episode-specific ani-skip
-flags safely; private socket avoids hijacking the user's mpv.
+flags safely; private socket avoids hijacking the user's mpv. The `--skip`
+exception narrowed once the skip flags were cached per episode: a missing or
+failing ani-skip produces no flags to apply, so restarting bought nothing.
+
+### History records completion, not merely what was opened (2026.10.4)
+**Choice:** `HistoryEntry` carries a `completed` flag, persisted as a trailing
+`state=0`/`state=1` token. `--continue` reopens the last episode when it was
+unfinished and advances only when it was finished.
+**Status:** Current
+**Reason:** History used to be written the moment playback started, while
+`--continue` read it as "last watched" and returned `episodes[idx + 1]`. The two
+assumptions collided: stopping 20 minutes into an episode skipped the rest of
+it. Completion is the only thing that makes "continue" mean resume.
+**Gotchas:**
+- *Do not "simplify" `idx + 1` to `idx`.* With no completion signal, resuming a
+  finished episode makes mpv rewind to the first frame (`_reset_resumed_position`)
+  and rewatch it, with no way to advance. That trades a skip bug for a loop bug.
+- *Rows without the token are read as completed, never unfinished.* They were
+  written under the old "advance" behaviour; defaulting them the other way would
+  replay an already-finished episode the first time a user ran `--continue`.
+- *The state token is matched by shape at the end of the row, not by field
+  position.* Titles may contain tabs, so a fixed position would corrupt them.
+- *Only natural EOF marks an episode finished* (`Playback.reached_eof()`).
+  The interactive menu re-checks it **on every exit path, before the player is
+  stopped or detached**, because that is the only moment the answer is both
+  known and still knowable. Recording at the top of the menu loop is too early
+  (the episode has not finished yet) and recording after `playback.stop()` is
+  too late (mpv is gone, so every episode looks unfinished). Ordinary playback
+  records at those exits too: closing the menu is the normal way users end a
+  long watch, and without it a finished episode stays unfinished and
+  `--continue` replays it.
+- *Closing the mpv window (its X button) is external and has no exit path.*
+  Every hook above is a branch ani-py controls; an X click is not. So
+  `_watch_completion` records the finish the moment it is observed while mpv is
+  still alive, and the last known state then survives an abrupt close.
+- *The watcher's 1s poll is a deliberate tradeoff, not the only option.*
+  mpv's `observe_property` was evaluated and rejected: it is supported and does
+  push `property-change` events, but under `--keep-open=yes` it never delivered
+  `eof-reached: true`. The terminal state arrived as an event with no `data`
+  field (property dropped), so an event-driven version would still need this
+  poll as a fallback. Cost is one small query per second on a connection that
+  is already open; the residual is a ~1s window in which closing the window
+  immediately after an episode ends records it unfinished. Do not swap this for
+  `observe_property` without re-verifying that it reports `true`; tightening the
+  interval buys only a narrower version of the same edge case.
+- *`reached_eof()` returns tri-state: True, False, or None.* None means the
+  player could not be reached, which is *not* the same as False. Writing None
+  down as "did not finish" makes the exit-path record erase the watcher's
+  result, so an episode watched to the end and then closed via the X button
+  would be replayed by `--continue`. Unknown must never overwrite known.
+- *`HistoryStore.update()` holds a lock.* The watcher writes from a background
+  thread while the main thread may be writing on exit; it is a
+  read-modify-write, so an unsynchronised interleaving would drop an episode.
+  `save()` writes a temp file and renames, so readers never see a partial row.
 
 ### Provider-independent auto-next (2026.10.4)
 **Choice:** `--auto-next` is an app/controller feature, not a provider
 capability. A single selected episode expands to the remaining entries in the
-already-loaded episode list; an explicit multi-episode selection/range is
-respected exactly. Each following episode is resolved lazily through the normal
-`_bundle()` path only after desktop mpv reports `eof-reached` over ani-py's
-private IPC socket.
+already-loaded episode list. The default cap of 12 (`--auto-next-limit`, 0 for
+no cap) applies only to that implicit expansion; an explicit multi-episode
+selection or range is always played exactly as chosen. Each following episode
+is resolved lazily through the normal `_bundle()` path only after desktop mpv
+reports an `end-file` event over ani-py's private IPC socket.
 **Status:** Current
 **Reason:** Providers should continue to expose only search/episode/resolve
 data. Keeping progression in `App` makes auto-next consistent across provider
@@ -270,6 +325,76 @@ control, and Android intent players are rejected for `--auto-next` rather than
 using process exit, relay traffic, or other completion guesses. The queue uses
 the episode-list snapshot loaded at startup and does not cross title/season
 boundaries automatically.
+
+**Gotchas learned while hardening this (do not "simplify" these away):**
+
+- *Completion is mpv's `end-file` event, not a polled `eof-reached`.*
+  Polling was racy in three separate ways, all reproduced against real mpv:
+  the property is briefly unavailable while a file swaps, it can still read
+  `True` from the file that just finished right after a `loadfile` (an episode
+  was advancing 0.46s after it loaded, not after it played), and it becomes
+  permanently unavailable once mpv unloads at the end, which surfaced to users
+  as a bogus "Lost contact with mpv" after a full 20s grace. `end-file` also
+  carries `reason`, the only way to tell a real EOF from `error`, `quit`, or a
+  replacement. `_IpcSession` holds one connection open and multiplexes replies
+  (matched by `request_id`) with events.
+- *mpv's `input-ipc-server` accepts exactly one client and pushes events only
+  to a connected client.* A connect/disconnect-per-command `_ipc()` silently
+  drops every event in between, which is why polling was used originally. The
+  session must therefore be opened before the first file can end.
+- *Auto-next launches mpv with `--keep-open=no --idle=yes`* (`event_completion`).
+  With `--keep-open=yes` mpv just pauses at the end and emits no `end-file` at
+  all; with `--keep-open=no` alone it would exit, so `--idle=yes` is what keeps
+  it alive to load the next episode into.
+- *`active()` must not probe `get_property path`.* `path` is unavailable while
+  mpv is idle with nothing loaded, which is exactly the state auto-next sits in
+  between episodes, so probing it made ani-py believe mpv had died and restart
+  the player on every episode switch. It probes `idle-active` instead. A
+  session left behind by a dead player is dropped in `play()` for the same
+  reason.
+- *mpv retries a stalled source itself and never ends the file*, so waiting
+  only on `end-file` hangs forever. `_wait_end_file` also accumulates
+  `paused-for-cache` time and gives up as `stalled`. It accumulates rather than
+  requiring a continuous run because mpv flaps that flag between retries.
+- *mpv `save-position-on-quit` resumes at the end of a finished file*, which is
+  a genuine EOF and silently skipped the entire queue in about 1.2s instead of
+  19s. `_reset_resumed_position()` rewinds when `time-pos >= duration - 1s`
+  and leaves genuine mid-episode resumes alone. It is applied on both the
+  launch path and the `loadfile` path, because mpv re-applies the saved
+  position on every file it opens.
+- *`replace()` restarts mpv only when ani-skip actually produced flags for the
+  new episode* (`_skip_args` is cached per `(mal_id, episode)`). Previously any
+  `--skip` forced a restart, even when ani-skip was missing or failed and there
+  were no flags to apply.
+- *Episode switches drop the previous episode's external subtitle tracks*
+  (`_clear_external_subtitles`) so a new episode cannot fall back to the last
+  one's subs. Embedded tracks stay; they belong to the file mpv is playing.
+- *The unusable-player rejection runs in `App.run()` before the search*, not
+  only in `_run_auto_next`, so `-p vlc --auto-next` fails immediately instead
+  of after a full lookup.
+- *`--auto-next-limit` must not trim an explicit selection.* The cap exists
+  only to stop one selected episode expanding into a whole season unattended;
+  a range the user deliberately picked is their decision and is played in full.
+  Applying the cap to both paths contradicted this section's own docstring.
+- *Auto-next leaves the terminal silent for the length of an episode*, and the
+  per-episode banner is printed once and never seen again. `NowPlaying` fills
+  that gap with a line redrawn in place plus an OSC tab title. Both are gated
+  on `sys.stderr.isatty()`: a piped or redirected run must not accumulate
+  carriage returns in a log file. It is `--auto-next` only, because ordinary
+  playback still has the interactive menu. `Playback.progress()` reads
+  `time-pos`/`duration` over the existing session rather than opening a new
+  connection, which mpv would refuse.
+- *Never render the episode number and the queue length as one ratio.*
+  `Ep {episode.number}/{len(queue)}` reads as "19 out of 8" the moment playback
+  starts mid-season, because those are unrelated numbers: the first is the
+  site's episode number, the second is how many were queued. They are shown
+  separately as `Ep 19 (1/8)`. The same applies to the tab title.
+
+Every one of these was found by driving the real `_run_auto_next` against a
+real mpv; none is reachable from the mocked unit tests. `wait_for_completion`
+falls back to polling only when ani-py could not hold a session open (an
+adopted detached session). Treat a change to this path as unverified until it
+has been run against real mpv.
 
 ### Termux/Android playback port
 **Choice:** Detached loopback relay child (`run_android_relay` via `--_android-relay-config`) plus intent dispatch in `Playback`; `android_auto` asks Android's resolver first, explicit `vlc`/`mpv` modes pin `org.videolan.vlc` / `is.xyz.mpv`; `termux-open` chooser and existing-`rish` retry are fallbacks only.
