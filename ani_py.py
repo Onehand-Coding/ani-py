@@ -2867,6 +2867,16 @@ class Playback:
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
             return False
 
+    def resume(self) -> bool:
+        """Resume an active mpv item after keep-open pauses at EOF."""
+        if not self._is_mpv() or not self.active():
+            return False
+        try:
+            self._ipc(["set_property", "pause", False])
+            return True
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            return False
+
     def replay(self) -> bool:
         if not self._is_mpv() or not self.active():
             return False
@@ -3741,6 +3751,8 @@ class App:
                 if rc != 0:
                     self.playback.stop()
                     return rc
+                if index > 0 and not self.playback.resume():
+                    warn("Auto-next loaded the next episode but could not resume mpv.")
 
                 completion = self.playback.wait_for_completion()
                 if completion != "eof":
@@ -3785,6 +3797,16 @@ class App:
                 print(f"{p.name:10} {p.display_name:12} {', '.join(caps)}{tag}")
             return 0
 
+        if getattr(self.args, "auto_next", False):
+            if self.args.download:
+                fail("--auto-next cannot be combined with --download.")
+            if getattr(self.args, "attach", False):
+                fail("--auto-next cannot be combined with --attach.")
+            if getattr(self.args, "no_detach", False):
+                fail("--auto-next cannot be combined with --no-detach.")
+            if self.args.exit_after_play:
+                fail("--auto-next cannot be combined with --exit-after-play.")
+
         if getattr(self.args, "attach", False):
             result = self._maybe_resume_detached_session(force=True)
             return 1 if result is None else result
@@ -3819,14 +3841,6 @@ class App:
         anime, episodes, selected = self._pick_episodes(anime, continue_after)
 
         if getattr(self.args, "auto_next", False):
-            if self.args.download:
-                fail("--auto-next cannot be combined with --download.")
-            if getattr(self.args, "attach", False):
-                fail("--auto-next cannot be combined with --attach.")
-            if self.args.no_detach:
-                fail("--auto-next cannot be combined with --no-detach.")
-            if self.args.exit_after_play:
-                fail("--auto-next cannot be combined with --exit-after-play.")
             return self._run_auto_next(anime, episodes, selected, self.args.quality)
 
         rc = 0
