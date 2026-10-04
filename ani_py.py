@@ -43,7 +43,7 @@ APP_NAME = "ani-py"
 # Calendar version (CalVer): the date the most recent user-visible change landed.
 # Monotonic by construction and comparable across automated release snapshots.
 # Bump it in the same commit as the change - see "Versioning" in CONTRIBUTING.md.
-VERSION = "2026.9.30"
+VERSION = "2026.10.4"
 BASE_URL = "https://hianime.at"
 ANILIGHT_BASE_URL = "https://anilight.live"
 ANILIGHT_API_URL = "https://api.anilight.live/api"
@@ -2122,6 +2122,40 @@ class Playback:
     def _ipc_supported(self) -> bool:
         return os.name == "posix" and hasattr(socket, "AF_UNIX")
 
+    def auto_next_supported(self) -> bool:
+        """Whether playback exposes a reliable natural-EOF signal."""
+        return self._is_mpv() and self._ipc_supported()
+
+    def wait_for_completion(self, poll_interval: float = 0.2) -> str:
+        """Wait for the current mpv item to finish.
+
+        Returns "eof" only when mpv reports that the media reached its
+        natural end. Any manual stop/close, player exit, or IPC loss returns
+        "closed" so callers never guess that an interrupted episode was
+        completed.
+        """
+        if not self.auto_next_supported() or self.ipc_path is None:
+            return "unsupported"
+
+        while True:
+            proc = self.proc
+            if proc is not None and proc.poll() is not None:
+                self.proc = None
+                self._cleanup_ipc()
+                return "closed"
+            try:
+                reached = self._ipc(["get_property", "eof-reached"], timeout=0.6)
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+                proc = self.proc
+                if proc is not None and proc.poll() is not None:
+                    self.proc = None
+                    self._cleanup_ipc()
+                return "closed"
+            if reached is True:
+                return "eof"
+            if poll_interval > 0:
+                time.sleep(poll_interval)
+
     def _find_rish(self) -> Optional[str]:
         candidates = [
             shutil.which("rish"),
@@ -3657,6 +3691,77 @@ class App:
                 else:
                     self._play_episode(anime, current, quality, replace=True)
 
+    @staticmethod
+    def _auto_next_queue(
+        episodes: Sequence[Episode], selected: Sequence[Episode]
+    ) -> list[Episode]:
+        """Build the provider-independent playback queue.
+
+        An explicit multi-episode selection/range is respected exactly. A
+        single selected episode means "start here and continue" through the
+        already-loaded episode list.
+        """
+        if len(selected) != 1:
+            return list(selected)
+        idx = episode_index(episodes, selected[0].number)
+        return list(episodes[idx:]) if idx is not None else list(selected)
+
+    def _run_auto_next(
+        self,
+        anime: Anime,
+        episodes: list[Episode],
+        selected: list[Episode],
+        quality: str,
+    ) -> int:
+        assert self.playback is not None
+        if not self.playback.auto_next_supported():
+            fail(
+                "--auto-next requires desktop mpv with private IPC. "
+                "VLC, IINA, custom players, Windows named-pipe IPC, and Android "
+                "intent players do not expose a reliable natural-EOF signal to ani-py."
+            )
+
+        queue = self._auto_next_queue(episodes, selected)
+        if not queue:
+            return 0
+
+        status(
+            f"Auto-next: {len(queue)} episode{'s' if len(queue) != 1 else ''} "
+            "(provider-independent, desktop mpv)"
+        )
+        try:
+            for index, episode in enumerate(queue):
+                rc = self._play_episode(
+                    anime,
+                    episode,
+                    quality,
+                    replace=index > 0,
+                    keep_open=True,
+                )
+                if rc != 0:
+                    self.playback.stop()
+                    return rc
+
+                completion = self.playback.wait_for_completion()
+                if completion != "eof":
+                    self.playback.stop()
+                    return 0
+
+                if index + 1 >= len(queue):
+                    self.playback.stop()
+                    ok("Auto-next queue finished.")
+                    return 0
+
+                next_episode = queue[index + 1]
+                ok(
+                    f"Episode {episode.number} finished; "
+                    f"starting Episode {next_episode.number}."
+                )
+        except (KeyboardInterrupt, SystemExit):
+            self.playback.stop()
+            raise
+        return 0
+
     def run(self) -> int:
         if self.args.clear_history:
             self.history.clear()
@@ -3712,6 +3817,18 @@ class App:
             continue_after = None
 
         anime, episodes, selected = self._pick_episodes(anime, continue_after)
+
+        if getattr(self.args, "auto_next", False):
+            if self.args.download:
+                fail("--auto-next cannot be combined with --download.")
+            if getattr(self.args, "attach", False):
+                fail("--auto-next cannot be combined with --attach.")
+            if self.args.no_detach:
+                fail("--auto-next cannot be combined with --no-detach.")
+            if self.args.exit_after_play:
+                fail("--auto-next cannot be combined with --exit-after-play.")
+            return self._run_auto_next(anime, episodes, selected, self.args.quality)
+
         rc = 0
         queued_playback = len(selected) > 1 and not self.args.download
         for ep in selected:
@@ -3867,6 +3984,7 @@ def build_parser() -> argparse.ArgumentParser:
               ANI_PY_MENU_FLAGS      extra menu flags
               ANI_PY_DOWNLOAD_DIR    download destination
               ANI_PY_SUB_LANG        preferred subtitle language/label, auto, or off
+              ANI_PY_AUTO_NEXT       1 to auto-play following episodes (desktop mpv IPC)
               ANI_PY_HIST_DIR        state directory root
               ANI_PY_CURL            curl/curl-impersonate executable
               ANI_PY_PROVIDER        auto, hianime, or anilight
@@ -3912,6 +4030,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--menu", choices=["fzf", "rofi", "dmenu"], help="interactive menu frontend")
     parser.add_argument("--menu-flags", default="", help="extra menu frontend flags (use --menu-flags='--flag' for dash-flags)")
     parser.add_argument("--skip", action="store_true", default=os.getenv("ANI_PY_SKIP_INTRO", "0") == "1", help="use ani-skip with mpv")
+    parser.add_argument(
+        "--auto-next",
+        action="store_true",
+        default=os.getenv("ANI_PY_AUTO_NEXT", "0") == "1",
+        help="auto-play following episodes after natural EOF (desktop mpv IPC only)",
+    )
     parser.add_argument("--no-detach", action="store_true", default=os.getenv("ANI_PY_NO_DETACH", "0") == "1", help="keep player attached")
     parser.add_argument("--exit-after-play", action="store_true", default=os.getenv("ANI_PY_EXIT_AFTER_PLAY", "0") == "1", help="exit after player closes/launches")
     parser.add_argument(
