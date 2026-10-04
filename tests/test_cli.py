@@ -24,6 +24,8 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(sub_ns.sub_lang, "de")
         attach_ns = parser.parse_args(["--attach"])
         self.assertTrue(attach_ns.attach)
+        auto_next_ns = parser.parse_args(["--auto-next", "frieren"])
+        self.assertTrue(auto_next_ns.auto_next)
 
     def test_environment_defaults(self):
         with patch.dict(os.environ, {
@@ -32,6 +34,7 @@ class TestCLI(unittest.TestCase):
             "ANI_PY_PLAYER": "mpv",
             "ANI_PY_SKIP_INTRO": "1",
             "ANI_PY_SUB_LANG": "de",
+            "ANI_PY_AUTO_NEXT": "1",
         }, clear=False):
             parser = ani_py.build_parser()
             ns = parser.parse_args(["frieren"])
@@ -40,6 +43,7 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ns.player, "mpv")
         self.assertTrue(ns.skip)
         self.assertEqual(ns.sub_lang, "de")
+        self.assertTrue(ns.auto_next)
 
     def test_provider_defaults_include_live_preflight_backup(self):
         # The default chain stays hianime-only: no unverified provider

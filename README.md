@@ -22,6 +22,7 @@ It is an independent, AI-assisted implementation inspired by terminal anime laun
 - VLC for Android and mpv-android from Termux
 - Android HLS relay for Referer-protected streams and subtitles
 - Interactive next / previous / replay / episode / quality / subtitle controls
+- Provider-independent `--auto-next` for desktop mpv, advancing only after natural EOF
 - Private mpv IPC by default, with persistent desktop-mpv detach/reattach controls
 - Downloads through `yt-dlp` with `ffmpeg` fallback
 - Optional `ani-skip` integration for desktop mpv
@@ -97,7 +98,7 @@ installed copy, so a local build ahead of the release is never silently rolled
 back. Re-run `install.sh` if you want to force the latest published release.
 
 The version is a calendar date, so `ani-py --version` reports something like
-`ani-py 2026.9.30` rather than a semver string. That date is what `--update`
+`ani-py 2026.10.4` rather than a semver string. That date is what `--update`
 compares to decide whether an update would actually be a downgrade.
 
 ### Uninstall
@@ -118,6 +119,7 @@ ani-py --dub -e 1-4 "bleach"
 ani-py -c
 ani-py -d -e 1-12 "pluto"
 ani-py --skip "summer time rendering"
+ani-py --auto-next -e 3 "frieren"
 ani-py --sub-lang de -d -e 1 "one piece"
 ani-py --attach
 ani-py --update
@@ -134,6 +136,95 @@ ani-py -p mpv "frieren"                    # mpv
 ```
 
 Run `ani-py --help` for the complete current option list.
+
+### Auto-next
+
+`--auto-next` is controlled by ani-py rather than by a streaming provider.
+ani-py keeps the episode list, waits for desktop mpv to report natural EOF over
+its private IPC socket, then lazily resolves and starts the next episode. This
+preserves quality/subtitle preferences, per-episode `ani-skip` behavior,
+history updates, and normal provider failover.
+
+Completion comes from mpv's `end-file` event, whose reason tells a finished
+episode apart from a stream that ended in an error, a closed player, or a source
+that stopped delivering bytes. Those cases are reported as such and never
+advance the queue.
+
+With one selected episode, auto-next continues from that episode through the
+currently loaded episode list. With an explicit multi-episode selection or
+range, only that queue is played. Closing/stopping mpv or losing IPC stops the
+queue; ani-py never treats a player exit as completed playback.
+
+The queue is capped so one selection cannot silently become a hundred
+episodes. `--auto-next-limit N` sets the ceiling (default 12); `0` disables it.
+Trimming always reports how many later episodes were dropped. The cap applies
+only when a single selection expands into the remaining episodes — an explicit
+multi-episode selection or range is always played exactly as you chose it,
+however long.
+
+Set `ANI_PY_AUTO_NEXT=1` to make the flag the environment default, and
+`ANI_PY_AUTO_NEXT_LIMIT` to set the ceiling.
+
+While an episode plays, ani-py keeps a now-playing line redrawn in place and
+mirrors it into the terminal tab title, so the current episode, its position,
+and what plays next stay visible even when the terminal is in the background:
+
+```
+▶ Frieren  Ep 3 (3/12)  14:32/24:10 (59%)  → Ep 4
+```
+
+Read it like this:
+
+| Part | Meaning |
+|---|---|
+| `Ep 3` | which episode of the season is playing |
+| `(3/12)` | **the 3rd of the 12 episodes in this queue** — not 3 of 12 in the season |
+| `14:32/24:10 (59%)` | playback position, total runtime, percentage |
+| `→ Ep 4` | what plays next; absent on the last one |
+
+The two numbers are separate on purpose. Starting mid-season, `-e 24
+--auto-next-limit 2` shows `Ep 24 (1/2)` then `Ep 25 (2/2)`: episode 24 of 25,
+with the two episodes it queued. Rendering the episode number as a ratio with
+the queue length (`Ep 24/2`) would read as "24 out of 2", which is not a
+number.
+
+This is `--auto-next` only; ordinary playback still opens its interactive
+menu. Both displays are suppressed when output is not a terminal, so piping to
+a file or a log stays clean.
+
+If mpv is configured with `save-position-on-quit`, relaunching a file already
+watched to the end would resume at the end and report immediate EOF. ani-py
+detects that and rewinds to the start, so an episode is never skipped just
+because mpv remembered where it stopped.
+
+The feature currently requires desktop mpv on POSIX systems. VLC, IINA, custom
+players, Windows named-pipe mpv control, and Android intent players do not
+expose the same reliable completion signal through ani-py, so `--auto-next`
+refuses those combinations instead of guessing. The check runs before the
+search, so an unusable player fails immediately rather than after a lookup.
+
+### History and resuming (`--continue`)
+
+`ani-py -c` picks up where you left off. If you stopped partway through an
+episode, it reopens that same episode and mpv restores your saved position. If
+you watched it to the end, it moves on to the next episode.
+
+History therefore records whether each episode was finished, not merely that it
+was opened, and the `Continue` list labels each one as watched or unfinished.
+Rows written by older versions carry no such information and are treated as
+finished, so they keep advancing exactly as they did before.
+
+Completion is noticed in two ways, because closing the player is something you
+can do at any moment. ani-py records it when mpv reports the episode has ended,
+and it also checks once a second while a detached player is running. That second
+check is what makes closing the mpv window count: an X click is not something
+ani-py can hook, and once the player is gone it can no longer be asked what
+state it was in. The cost is one small query per second on a connection that is
+already open; the trade-off is that closing the window in the second immediately
+after an episode ends may still be recorded as unfinished.
+
+If you quit mid-episode, on purpose or by closing the window, the episode stays
+marked unfinished and `--continue` resumes it with mpv's saved position.
 
 ## Termux / Android
 
