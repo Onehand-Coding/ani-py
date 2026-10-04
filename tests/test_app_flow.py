@@ -97,6 +97,7 @@ class TestAppFlow(unittest.TestCase):
         self.assertTrue(first.kwargs["keep_open"])
         self.assertTrue(second.kwargs["replace"])
         self.assertTrue(second.kwargs["keep_open"])
+        app.playback.resume.assert_called_once_with()
         app.playback.stop.assert_called_once_with()
 
     def test_auto_next_stops_queue_when_playback_closes_before_eof(self):
@@ -304,6 +305,14 @@ class TestAppFlow(unittest.TestCase):
         app.playback.set_subtitle.assert_called_once_with(german)
         app._play_episode.assert_not_called()
         self.assertEqual(app.subtitle_preference, "label:German")
+
+    def test_auto_next_rejects_attach_before_session_handling(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(auto_next=True, attach=True)
+        app.history = Mock()
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                app.run()
 
     def test_clear_history_short_circuits(self):
         app = object.__new__(ani_py.App)
