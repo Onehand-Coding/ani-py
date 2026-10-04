@@ -248,7 +248,8 @@ runtime design).
 **Choice:** mpv primary; per-process private IPC socket; episode queues
 run foreground with keep-open disabled; episode switches use in-place IPC
 `loadfile` even with `--skip`. ani-py parses ani-skip's flags itself and
-feeds the intervals to an embedded mpv script over a JSON state file;
+feeds the intervals to an embedded mpv script over a small per-session state
+file;
 `--chapters-file` is passed via `loadfile`'s per-file options (mpv >= 0.38)
 with a legacy three-argument fallback. The last window shape (fullscreen,
 geometry, autofit) is captured over IPC before a restart and re-applied as
@@ -259,6 +260,15 @@ while the `--skip` restart path respawned mpv at the mpv.conf geometry and
 dropped the toggled window state. Private socket avoids hijacking the user's
 mpv. Caching `_skip_args` per `(mal_id, episode)` narrowed the restart path
 down to ani-skip episodes; the embedded script removes that restart too.
+
+Skip intervals are not passed to mpv's user script-opts anymore; ani-py
+extracts them from ani-skip's stdout into the private `<socket>.skip` state
+file (sitting next to the IPC socket in `$XDG_RUNTIME_DIR` or the systemd
+runtime dir, per the socket's location) and embeds
+`~/.local/state/ani-py/ani-py-skip.lua`, which re-reads intervals on every
+mpv file-loaded event. The Lua state-file parser must accept `%w_` keys
+(`op_start`) — Lua's `%w` does not include the underscore, and using it
+silently zero-fills the intervals.
 
 ### History records completion, not merely what was opened (2026.10.4)
 **Choice:** `HistoryEntry` carries a `completed` flag, persisted as a trailing
