@@ -134,6 +134,15 @@ class TestPlayers(unittest.TestCase):
     @patch.object(ani_py.Playback, "active", return_value=True)
     @patch.object(ani_py.Playback, "_ipc")
     @patch("ani_py.which_first", return_value="/usr/bin/mpv")
+    def test_resume_unpauses_active_mpv(self, mock_which, mock_ipc, mock_active):
+        pb = ani_py.Playback(args(player="mpv"))
+        pb.ipc_path = ani_py.Path("/tmp/test.sock")
+        self.assertTrue(pb.resume())
+        mock_ipc.assert_called_once_with(["set_property", "pause", False])
+
+    @patch.object(ani_py.Playback, "active", return_value=True)
+    @patch.object(ani_py.Playback, "_ipc")
+    @patch("ani_py.which_first", return_value="/usr/bin/mpv")
     def test_replay_seeks_current_mpv(self, mock_which, mock_ipc, mock_active):
         pb = ani_py.Playback(args(player="mpv"))
         pb.ipc_path = ani_py.Path("/tmp/test.sock")
