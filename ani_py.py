@@ -2480,7 +2480,8 @@ local function read_state()
     end
     local values = {}
     for line in f:lines() do
-        local key, value = line:match("^(%w+)=%s*([%d%.%s%-]+)$")
+        -- Lua's %w covers letters and digits only, so "op_start" etc. need %w_.
+        local key, value = line:match("^([%w_]+)=(.+)$")
         if key then
             values[key] = tonumber(value) or 0
         end
