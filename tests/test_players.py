@@ -584,13 +584,54 @@ class TestPlayers(unittest.TestCase):
     @patch.object(ani_py.Playback, "active", return_value=True)
     @patch.object(ani_py.Playback, "_ipc_supported", return_value=True)
     @patch("ani_py.which_first", return_value="/usr/bin/mpv")
-    def test_replace_restarts_when_skip_produced_episode_flags(self, mock_which, mock_supported, mock_active):
+    def test_replace_applies_skip_state_without_restarting(self, mock_which, mock_supported, mock_active):
         pb = ani_py.Playback(args(player="mpv", skip=True))
         pb.ipc_path = ani_py.Path("/tmp/test.sock")
-        with patch.object(pb, "_skip_args", return_value=["--script-opts=skip-op_start=1"]), \
-                patch.object(pb, "play", return_value=0) as play:
-            pb.replace(ani_py.Stream("1080p", "https://cdn/2.m3u8"), **KW)
-        play.assert_called_once()
+        with patch.object(pb, "_skip_args", return_value=["--chapters-file=/tmp/ep2.txt", "--script-opts=skip-op_start=1"]), \
+                patch.object(pb, "_write_skip_state"), \
+                patch.object(pb, "play", return_value=0) as play, \
+                patch.object(pb, "_wait_path", return_value=True), \
+                patch.object(pb, "_clear_external_subtitles"), \
+                patch.object(pb, "_reset_resumed_position", return_value=False), \
+                patch.object(pb, "_ipc") as ipc:
+            rc = pb.replace(ani_py.Stream("1080p", "https://cdn/2.m3u8"), **KW)
+        play.assert_not_called()
+        self.assertEqual(rc, 0)
+        commands = [call.args[0] for call in ipc.call_args_list]
+        self.assertIn(
+            ["loadfile", "https://cdn/2.m3u8", "replace", -1, "chapters-file=/tmp/ep2.txt"],
+            commands,
+        )
+
+    def test_parse_skip_flags_extracts_chapters_and_intervals(self):
+        data = ani_py.parse_skip_flags([
+            "--chapters-file=/tmp/ep1.txt",
+            "--script-opts=skip-op_start=83.5,skip-op_end=92,skip-ed_start=1200,skip-ed_end=1280,skip-offset=1",
+        ])
+        assert data is not None
+        self.assertEqual(data.get("chapters_file"), "/tmp/ep1.txt")
+        self.assertEqual(data.get("op_start"), 83.5)
+        self.assertEqual(data.get("op_end"), 92.0)
+        self.assertEqual(data.get("ed_start"), 1200.0)
+        self.assertEqual(data.get("ed_end"), 1280.0)
+        self.assertEqual(data.get("offset"), 1.0)
+
+    def test_parse_skip_flags_is_empty_for_empty_input(self):
+        self.assertIsNone(ani_py.parse_skip_flags([]))
+
+    def test_window_flags_require_matching_state(self):
+        pb = ani_py.Playback(args(player="mpv"))
+        self.assertEqual(pb._window_flags(), [])
+        pb._window_state = {
+            "fullscreen": True,
+            "geometry": "300x200",
+            "autofit": "50%x0",
+            "junk": "<script>",
+        }
+        self.assertEqual(
+            pb._window_flags(),
+            ["--fullscreen", "--geometry=300x200", "--autofit=50%x0"],
+        )
 
     @patch.object(ani_py.Playback, "active", return_value=True)
     @patch.object(ani_py.Playback, "_ipc_supported", return_value=True)

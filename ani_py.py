@@ -1543,6 +1543,66 @@ class DetachedSessionStore:
             pass
 
 
+# Window restore follows mpv's geometry string format: "<width>x<height>"
+# (both may be "<n>%" relative to the screen), optionally followed by a
+# "+X+Y" or "-X-Y" placement. Anything not matching this is ignored rather
+# than re-applied, so a corrupted state file can never generate a bad flag.
+_WINDOW_GEOMETRY_RE = re.compile(r"^[0-9.%]+x[0-9.%]+([+-][0-9.%]+)?([+-][0-9.%]+)?$")
+_WINDOW_AUTOFIT_RE = re.compile(r"^[0-9.%]+x[0-9.%]+$")
+
+
+class WindowStateStore:
+    """Persist the last mpv window shape across ani-py runs.
+
+    mpv itself only applies window options from the command line while it
+    starts; a restart is triggered by the auto-next fallback, a dropped IPC
+    session, or a fresh ``ani-py`` invocation. Without persisted state each
+    of those re-opened mpv at the configured default size (``video=no`` plus
+    the user's ``geometry=``), losing fullscreen and the last window size.
+    """
+
+    def __init__(self) -> None:
+        root = Path(os.getenv("ANI_PY_HIST_DIR") or os.getenv("XDG_STATE_HOME") or (Path.home() / ".local/state"))
+        self.dir = root / APP_NAME
+        self.path = self.dir / "window-state.json"
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def load(self) -> dict[str, object]:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, object] = {}
+        if raw.get("fullscreen") is True or raw.get("fullscreen") is False:
+            out["fullscreen"] = raw["fullscreen"]
+        geometry = raw.get("geometry")
+        if isinstance(geometry, str) and geometry and _WINDOW_GEOMETRY_RE.match(geometry) is not None:
+            out["geometry"] = geometry
+        autofit = raw.get("autofit")
+        if isinstance(autofit, str) and autofit and _WINDOW_AUTOFIT_RE.match(autofit) is not None:
+            out["autofit"] = autofit
+        return out
+
+    def save(self, data: dict[str, object]) -> None:
+        payload = json.dumps({k: v for k, v in data.items()}, ensure_ascii=False, indent=2) + "\n"
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=self.dir, delete=False
+        ) as handle:
+            handle.write(payload)
+            temp_name = handle.name
+        Path(temp_name).replace(self.path)
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
 # ---------- menu ----------
 
 class Menu:
@@ -2341,6 +2401,143 @@ class PlayKw(TypedDict):
     subtitle_label: Optional[str]
 
 
+class SkipData(TypedDict, total=False):
+    """Parsed view of the flags ani-skip emits; keys are optional.
+
+    Parsed once, on the Python side, out of ani-skip's `--chapters-file`
+    (for the OSC scrub bar) and its `script-opts` (the skip intervals we
+    feed to the embedded skip runtime).
+    """
+
+    chapters_file: str
+    op_start: float
+    op_end: float
+    ed_start: float
+    ed_end: float
+    offset: float
+
+
+_SKIP_CHAPTERS_RE = re.compile(r"--chapters-file=(\S+)")
+_SKIP_OP_START_RE = re.compile(r"skip-op_start=([0-9.]+)")
+_SKIP_OP_END_RE = re.compile(r"skip-op_end=([0-9.]+)")
+_SKIP_ED_START_RE = re.compile(r"skip-ed_start=([0-9.]+)")
+_SKIP_ED_END_RE = re.compile(r"skip-ed_end=([0-9.]+)")
+_SKIP_OFFSET_RE = re.compile(r"skip-offset=([0-9.]+)")
+
+
+def parse_skip_flags(flags: Sequence[str]) -> Optional[SkipData]:
+    if not flags:
+        return None
+    text = " ".join(flags)
+    result: SkipData = {}
+    chapters_match = _SKIP_CHAPTERS_RE.search(text)
+    if chapters_match:
+        result["chapters_file"] = chapters_match.group(1)
+    for name, pattern in (
+        ("op_start", _SKIP_OP_START_RE),
+        ("op_end", _SKIP_OP_END_RE),
+        ("ed_start", _SKIP_ED_START_RE),
+        ("ed_end", _SKIP_ED_END_RE),
+        ("offset", _SKIP_OFFSET_RE),
+    ):
+        match = pattern.search(text)
+        if not match:
+            continue
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            continue
+        if name == "op_start":
+            result["op_start"] = value
+        elif name == "op_end":
+            result["op_end"] = value
+        elif name == "ed_start":
+            result["ed_start"] = value
+        elif name == "ed_end":
+            result["ed_end"] = value
+        else:
+            result["offset"] = value
+    return result or None
+
+
+# Embedded into the standalone build and written to the state directory on
+# first use of --skip. It is the *same* skip logic the user's
+# ~/.config/mpv/scripts/skip.lua implements, except it re-reads the
+# interval file ani-py owns on every file-loaded event -- see CONTEXT.md
+# under "--skip". The user's skip.lua keeps skipping nothing as long as
+# ani-py --skip is active (it receives no script-opts anymore).
+ANI_PY_SKIP_LUA = r'''
+local mpv = require("mp")
+
+local function read_state()
+    local path = os.getenv("ANI_PY_SKIP_FILE")
+    if not path or path == "" then
+        return nil
+    end
+    local f = io.open(path, "r")
+    if not f then
+        return nil
+    end
+    local values = {}
+    for line in f:lines() do
+        local key, value = line:match("^(%w+)=%s*([%d%.%s%-]+)$")
+        if key then
+            values[key] = tonumber(value) or 0
+        end
+    end
+    f:close()
+    if values.op_start then
+        return values
+    end
+    return nil
+end
+
+local intervals = { op_start = 0, op_end = 0, ed_start = 0, ed_end = 0, offset = 0 }
+local skipped_op = false
+local skipped_ed = false
+
+local function apply_state()
+    local current = read_state()
+    if current then
+        intervals.op_start = current.op_start or 0
+        intervals.op_end = current.op_end or 0
+        intervals.ed_start = current.ed_start or 0
+        intervals.ed_end = current.ed_end or 0
+        intervals.offset = current.offset or 0
+    else
+        intervals.op_start, intervals.op_end, intervals.ed_start,
+            intervals.ed_end, intervals.offset = 0, 0, 0, 0, 0
+    end
+    skipped_op = false
+    skipped_ed = false
+end
+
+local function check()
+    local t = mp.get_property_number("time-pos")
+    if not t then
+        return
+    end
+    local op_target = intervals.op_end - intervals.offset
+    local ed_target = intervals.ed_end - intervals.offset
+    if t >= intervals.op_start and t < op_target then
+        if not skipped_op then
+            mp.set_property_number("time-pos", op_target)
+            skipped_op = true
+        end
+    end
+    if t >= intervals.ed_start and t < ed_target then
+        if not skipped_ed then
+            mp.set_property_number("time-pos", ed_target)
+            skipped_ed = true
+        end
+    end
+end
+
+mp.observe_property("time-pos", "number", check)
+mp.register_event("file-loaded", apply_state)
+'''
+
+
 class Playback:
     """Launch players and own one private mpv IPC endpoint.
 
@@ -2365,9 +2562,12 @@ class Playback:
         self._android_relay_proc: Optional[subprocess.Popen] = None
         self._android_relay_dir: Optional[Path] = None
         # ani-skip flags are per (mal id, episode) and cost a subprocess call,
-        # so remember them; replace() needs to know whether the *next* episode
-        # actually produced flags before choosing an in-place or fresh process.
+        # so remember them; _skip_data turns the cached flags into the chapters
+        # option plus the skip-state file the embedded mpv script reads.
         self._skip_cache: dict[tuple[Optional[str], str], list[str]] = {}
+        # Remembered only when we actually captured it: never invent defaults
+        # for a window this run has not seen.
+        self._window_state: dict[str, object] = WindowStateStore().load()
 
     def _detect_player(self) -> str:
         if self.args.download:
@@ -2900,6 +3100,92 @@ class Playback:
             warn(f"ani-skip returned no mpv flags for episode {episode}.")
         return flags
 
+    def _skip_state_path(self) -> Path:
+        if self.ipc_path is not None:
+            return self.ipc_path.with_suffix(".skip")
+        return Path(tempfile.gettempdir()) / f"ani-py-skip-{os.getpid()}.state"
+
+    def _ensure_skip_script(self) -> Optional[Path]:
+        if not self._is_mpv() or self._is_android():
+            return None
+        root = Path(os.getenv("ANI_PY_HIST_DIR") or os.getenv("XDG_STATE_HOME") or (Path.home() / ".local/state"))
+        directory = root / APP_NAME
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            script = directory / "ani-py-skip.lua"
+            if not script.exists() or script.read_text(encoding="utf-8", errors="replace") != ANI_PY_SKIP_LUA:
+                script.write_text(ANI_PY_SKIP_LUA, encoding="utf-8")
+            return script
+        except OSError as exc:
+            warn(f"Could not stage the ani-py skip script ({exc}); falling back to restarts.")
+            return None
+
+    def _write_skip_state(self, mal_id: Optional[str], episode: str) -> Optional[Path]:
+        path = self._skip_state_path()
+        data = self._skip_data(mal_id, episode) or {}
+        values: dict[str, float] = {}
+        for key in ("op_start", "op_end", "ed_start", "ed_end", "offset"):
+            v = data.get(key)
+            values[key] = float(v) if isinstance(v, (int, float)) else 0.0
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "\n".join(f"{k}={v}" for k, v in values.items()) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            warn(f"Could not write the skip state file ({exc}); skip intervals are unavailable this episode.")
+            return None
+        return path
+
+    def _skip_data(self, mal_id: Optional[str], episode: str) -> Optional[SkipData]:
+        if not self.args.skip:
+            return None
+        return parse_skip_flags(self._skip_args(mal_id, episode))
+
+    def _window_flags(self) -> list[str]:
+        state = self._window_state
+        if not state:
+            return []
+        flags: list[str] = []
+        if state.get("fullscreen") is True:
+            flags.append("--fullscreen")
+        geometry = state.get("geometry")
+        if isinstance(geometry, str) and _WINDOW_GEOMETRY_RE.match(geometry) is not None:
+            flags.append(f"--geometry={geometry}")
+        autofit = state.get("autofit")
+        if isinstance(autofit, str) and _WINDOW_AUTOFIT_RE.match(autofit) is not None:
+            flags.append(f"--autofit={autofit}")
+        return flags
+
+    def _capture_window_state(self) -> None:
+        """Snapshot the playing window's shape before a restart replaces it.
+
+        Runs synchronously before teardown so the same properties the user
+        picked (fullscreen, size/placement, fit) can be offered back to the
+        next launch instead of reverting to mpv.conf geometry.
+        """
+        if not self._is_mpv() or self.ipc_path is None:
+            return
+        captured: dict[str, object] = {}
+        try:
+            fullscreen = self._ipc(["get_property", "fullscreen"], timeout=0.5)
+            if isinstance(fullscreen, bool):
+                captured["fullscreen"] = fullscreen
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+            pass
+        for name in ("geometry", "autofit"):
+            try:
+                value = self._ipc(["get_property", name], timeout=0.5)
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+                continue
+            if isinstance(value, str) and _WINDOW_GEOMETRY_RE.match(value) is not None:
+                captured[name] = value
+
+        if captured:
+            WindowStateStore().save(captured)
+            self._window_state = dict(captured)
+
     def _make_ipc_path(self) -> Path:
         # Explicit opt-in can be used to share a socket, but the default must be
         # private so tools such as yt-cli/mpv-control can keep /tmp/mpvsocket.
@@ -3118,6 +3404,9 @@ class Playback:
             self._android_launched = False
             return
         if self._is_mpv() and self.ipc_path is not None:
+            # Capture before quitting: the window belongs to the old mpv
+            # process and is gone the moment quit lands.
+            self._capture_window_state()
             try:
                 self._ipc(["quit"], timeout=0.7)
             except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
@@ -3217,7 +3506,26 @@ class Playback:
         ]
         if subtitle:
             cmd.append(f"--sub-file={subtitle}")
-        cmd += self._skip_args(mal_id, episode) + extra + [stream.url]
+        # Window state is applied as CLI flags so a remembered fullscreen or
+        # geometry beats mpv.conf on a fresh launch. The later user flags
+        # (ANI_PY_PLAYER_FLAGS / --player-flag) still win because mpv
+        # honours the last occurrence of an option.
+        cmd += self._window_flags()
+        if self.args.skip:
+            # With the bundled skip script the user's skip.lua namespace
+            # stays empty, so the script-opts path would double-apply.
+            script = self._ensure_skip_script() if self._is_mpv() else None
+            if script is not None:
+                os.environ["ANI_PY_SKIP_FILE"] = str(self._skip_state_path())
+                self._write_skip_state(mal_id, episode)
+                data = self._skip_data(mal_id, episode) or {}
+                cmd.append(f"--script={script}")
+                chapters_file = data.get("chapters_file")
+                if isinstance(chapters_file, str) and chapters_file:
+                    cmd.append(f"--chapters-file={chapters_file}")
+            else:
+                cmd += self._skip_args(mal_id, episode)
+        cmd += extra + [stream.url]
         return cmd
 
     def play(
@@ -3330,12 +3638,12 @@ class Playback:
         subtitle_label: Optional[str] = None,
     ) -> int:
         """Replace the current mpv item in-place; restart only as a fallback."""
-        # ani-skip flags are episode-specific mpv options that cannot be changed
-        # reliably over IPC, so an episode that actually produced flags needs a
-        # fresh process. With no flags to apply, in-place is safe and keeps the
-        # window (and the IPC socket) alive across episodes.
-        skip_flags = self._skip_args(mal_id, episode) if self.args.skip else []
-        if not self._is_mpv() or not self._ipc_supported() or skip_flags or not self.active():
+        # Episode changes are applied in-place to keep the window (and IPC
+        # socket) alive. Skip data is rebuilt for each episode: _write_skip_state
+        # overwrites the file the embedded mpv script re-reads, and chapters
+        # ride the loadfile per-file options. The fallback restart path keeps
+        # the same flags going in via _mpv_command's chapter argument.
+        if not self._is_mpv() or not self._ipc_supported() or not self.active():
             if self.active():
                 self.stop()
             return self.play(
@@ -3352,7 +3660,27 @@ class Playback:
         try:
             self._ipc(["set_property", "referrer", referer])
             self._ipc(["set_property", "force-media-title", title])
-            self._ipc(["loadfile", stream.url, "replace"])
+            if self.args.skip:
+                # Episode-specific skip data: ani-py owns it via a JSON state
+                # file the embedded mpv script re-reads on file-loaded, and
+                # chapters via loadfile's per-file options.
+                self._write_skip_state(mal_id, episode)
+            chapters: Optional[str] = None
+            if self.args.skip:
+                data = self._skip_data(mal_id, episode) or {}
+                chapters_file = data.get("chapters_file")
+                if isinstance(chapters_file, str):
+                    chapters = chapters_file
+            if chapters is not None:
+                # mpv >= 0.38 takes chapter options as the fourth loadfile
+                # argument (insert index -1); older accepts options as the
+                # third. Try the modern form first, then the legacy shape.
+                try:
+                    self._ipc(["loadfile", stream.url, "replace", -1, f"chapters-file={chapters}"])
+                except RuntimeError:
+                    self._ipc(["loadfile", stream.url, "replace", f"chapters-file={chapters}"])
+            else:
+                self._ipc(["loadfile", stream.url, "replace"])
             self._wait_path(stream.url)
             self._ipc(["set_property", "force-media-title", title])
             self._clear_external_subtitles()
