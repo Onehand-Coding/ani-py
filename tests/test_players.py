@@ -142,8 +142,21 @@ class FakeIpcServer:
         self._listener.close()
 
 
+def make_playback(**overrides):
+    """A Playback whose player lookup is mocked.
+
+    Playback() resolves the player binary during construction. Tests here
+    exercise IPC behaviour, not player discovery, and CI runners have no mpv,
+    so the lookup is mocked the way the rest of this file does.
+    """
+    with patch("ani_py.which_first", return_value="/usr/bin/mpv"), patch(
+        "ani_py.is_android_environment", return_value=False
+    ):
+        return ani_py.Playback(args(player="mpv", **overrides))
+
+
 def session_playback(server, replies=None):
-    pb = ani_py.Playback(args(player="mpv"))
+    pb = make_playback()
     pb.ipc_path = ani_py.Path(server.path)
     pb.proc = Mock()
     pb.proc.poll.return_value = None
@@ -254,7 +267,7 @@ class TestIpcSession(unittest.TestCase):
 
     def test_reached_eof_is_unknown_without_a_session(self):
         # False would mean "did not finish" and would erase a recorded finish.
-        pb = ani_py.Playback(args(player="mpv"))
+        pb = make_playback()
         self.assertIsNone(pb.reached_eof())
 
     def test_reached_eof_is_unknown_once_the_player_is_gone(self):
@@ -301,7 +314,7 @@ class TestIpcSession(unittest.TestCase):
         pb._cleanup_ipc()
 
     def test_play_drops_a_session_left_by_a_dead_player(self):
-        pb = ani_py.Playback(args(player="mpv"))
+        pb = make_playback()
         stale = Mock()
         pb._session = stale
         with patch.object(ani_py.Playback, "active", return_value=False), \
