@@ -14,6 +14,9 @@ def app_args(**overrides):
         quality="best",
         download=False,
         exit_after_play=False,
+        auto_next=False,
+        no_detach=False,
+        attach=False,
         list_providers=False,
         provider="auto",
         provider_order="hianime,anilight",
@@ -63,6 +66,66 @@ class TestAppFlow(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(app._play_episode.call_count, 2)
         app._interactive_loop.assert_not_called()
+
+    def test_auto_next_single_episode_expands_to_remaining_episode_list(self):
+        episodes = [ani_py.Episode(str(100 + i), str(i)) for i in range(1, 5)]
+        queue = ani_py.App._auto_next_queue(episodes, [episodes[1]])
+        self.assertEqual([episode.number for episode in queue], ["2", "3", "4"])
+
+    def test_auto_next_explicit_multi_selection_is_respected_exactly(self):
+        episodes = [ani_py.Episode(str(100 + i), str(i)) for i in range(1, 5)]
+        selected = [episodes[3], episodes[1]]
+        queue = ani_py.App._auto_next_queue(episodes, selected)
+        self.assertEqual(queue, selected)
+
+    def test_auto_next_advances_only_after_natural_eof(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(auto_next=True)
+        anime = ani_py.Anime("frieren-999", "Frieren")
+        episodes = [ani_py.Episode("101", "1"), ani_py.Episode("102", "2")]
+        app.playback = Mock()
+        app.playback.auto_next_supported.return_value = True
+        app.playback.wait_for_completion.side_effect = ["eof", "eof"]
+        app._play_episode = Mock(return_value=0)
+
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app._run_auto_next(anime, episodes, [episodes[0]], "best"), 0)
+
+        self.assertEqual(app._play_episode.call_count, 2)
+        first, second = app._play_episode.call_args_list
+        self.assertFalse(first.kwargs["replace"])
+        self.assertTrue(first.kwargs["keep_open"])
+        self.assertTrue(second.kwargs["replace"])
+        self.assertTrue(second.kwargs["keep_open"])
+        app.playback.resume.assert_called_once_with()
+        app.playback.stop.assert_called_once_with()
+
+    def test_auto_next_stops_queue_when_playback_closes_before_eof(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(auto_next=True)
+        anime = ani_py.Anime("frieren-999", "Frieren")
+        episodes = [ani_py.Episode("101", "1"), ani_py.Episode("102", "2")]
+        app.playback = Mock()
+        app.playback.auto_next_supported.return_value = True
+        app.playback.wait_for_completion.return_value = "closed"
+        app._play_episode = Mock(return_value=0)
+
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app._run_auto_next(anime, episodes, [episodes[0]], "best"), 0)
+
+        app._play_episode.assert_called_once()
+        app.playback.stop.assert_called_once_with()
+
+    def test_auto_next_rejects_player_without_reliable_completion_signal(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(auto_next=True)
+        app.playback = Mock()
+        app.playback.auto_next_supported.return_value = False
+        anime = ani_py.Anime("frieren-999", "Frieren")
+        episodes = [ani_py.Episode("101", "1")]
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                app._run_auto_next(anime, episodes, episodes, "best")
 
     def test_continue_history_advances_to_next_episode(self):
         app = object.__new__(ani_py.App)
@@ -242,6 +305,14 @@ class TestAppFlow(unittest.TestCase):
         app.playback.set_subtitle.assert_called_once_with(german)
         app._play_episode.assert_not_called()
         self.assertEqual(app.subtitle_preference, "label:German")
+
+    def test_auto_next_rejects_attach_before_session_handling(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(auto_next=True, attach=True)
+        app.history = Mock()
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                app.run()
 
     def test_clear_history_short_circuits(self):
         app = object.__new__(ani_py.App)

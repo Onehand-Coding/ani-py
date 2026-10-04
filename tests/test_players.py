@@ -134,6 +134,15 @@ class TestPlayers(unittest.TestCase):
     @patch.object(ani_py.Playback, "active", return_value=True)
     @patch.object(ani_py.Playback, "_ipc")
     @patch("ani_py.which_first", return_value="/usr/bin/mpv")
+    def test_resume_unpauses_active_mpv(self, mock_which, mock_ipc, mock_active):
+        pb = ani_py.Playback(args(player="mpv"))
+        pb.ipc_path = ani_py.Path("/tmp/test.sock")
+        self.assertTrue(pb.resume())
+        mock_ipc.assert_called_once_with(["set_property", "pause", False])
+
+    @patch.object(ani_py.Playback, "active", return_value=True)
+    @patch.object(ani_py.Playback, "_ipc")
+    @patch("ani_py.which_first", return_value="/usr/bin/mpv")
     def test_replay_seeks_current_mpv(self, mock_which, mock_ipc, mock_active):
         pb = ani_py.Playback(args(player="mpv"))
         pb.ipc_path = ani_py.Path("/tmp/test.sock")
@@ -141,6 +150,40 @@ class TestPlayers(unittest.TestCase):
         commands = [call.args[0] for call in mock_ipc.call_args_list]
         self.assertEqual(commands[0], ["seek", 0, "absolute"])
         self.assertEqual(commands[1], ["set_property", "pause", False])
+
+    @patch.object(ani_py.Playback, "_ipc_supported", return_value=True)
+    @patch("ani_py.which_first", return_value="/usr/bin/mpv")
+    def test_auto_next_support_requires_mpv_ipc(self, mock_which, mock_supported):
+        pb = ani_py.Playback(args(player="mpv"))
+        self.assertTrue(pb.auto_next_supported())
+
+    @patch.object(ani_py.Playback, "_ipc_supported", return_value=True)
+    @patch("ani_py.which_first", return_value="/usr/bin/mpv")
+    def test_wait_for_completion_reports_only_natural_eof(self, mock_which, mock_supported):
+        pb = ani_py.Playback(args(player="mpv"))
+        pb.ipc_path = ani_py.Path("/tmp/test-auto-next.sock")
+        pb.proc = Mock()
+        pb.proc.poll.return_value = None
+        with patch.object(pb, "_ipc", side_effect=[False, True]) as ipc:
+            self.assertEqual(pb.wait_for_completion(poll_interval=0), "eof")
+        self.assertEqual(ipc.call_count, 2)
+        ipc.assert_called_with(["get_property", "eof-reached"], timeout=0.6)
+
+    @patch.object(ani_py.Playback, "_ipc_supported", return_value=True)
+    @patch("ani_py.which_first", return_value="/usr/bin/mpv")
+    def test_wait_for_completion_does_not_treat_player_exit_as_eof(self, mock_which, mock_supported):
+        pb = ani_py.Playback(args(player="mpv"))
+        pb.ipc_path = ani_py.Path("/tmp/test-auto-next.sock")
+        pb.proc = Mock()
+        pb.proc.poll.return_value = 0
+        self.assertEqual(pb.wait_for_completion(poll_interval=0), "closed")
+        self.assertIsNone(pb.proc)
+        self.assertIsNone(pb.ipc_path)
+
+    @patch("ani_py.which_first", return_value="/usr/bin/vlc")
+    def test_auto_next_support_rejects_non_mpv(self, mock_which):
+        pb = ani_py.Playback(args(player="vlc"))
+        self.assertFalse(pb.auto_next_supported())
 
     @patch("ani_py.subprocess.run")
     @patch.object(ani_py.Playback, "_ipc_supported", return_value=False)

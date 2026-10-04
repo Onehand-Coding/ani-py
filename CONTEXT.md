@@ -251,6 +251,26 @@ run foreground with keep-open disabled; `--skip` forces fresh processes.
 **Reason:** In-place IPC replace can't carry episode-specific ani-skip
 flags safely; private socket avoids hijacking the user's mpv.
 
+### Provider-independent auto-next (2026.10.4)
+**Choice:** `--auto-next` is an app/controller feature, not a provider
+capability. A single selected episode expands to the remaining entries in the
+already-loaded episode list; an explicit multi-episode selection/range is
+respected exactly. Each following episode is resolved lazily through the normal
+`_bundle()` path only after desktop mpv reports `eof-reached` over ani-py's
+private IPC socket.
+**Status:** Current
+**Reason:** Providers should continue to expose only search/episode/resolve
+data. Keeping progression in `App` makes auto-next consistent across provider
+failover and preserves quality/subtitle preferences, history, and episode-
+specific ani-skip behavior. Natural EOF is deliberately distinguished from
+player close/stop; interrupted playback never advances automatically.
+**Limitations:** Reliable completion detection currently requires desktop mpv
+with POSIX Unix-socket IPC. VLC, IINA, custom players, Windows named-pipe mpv
+control, and Android intent players are rejected for `--auto-next` rather than
+using process exit, relay traffic, or other completion guesses. The queue uses
+the episode-list snapshot loaded at startup and does not cross title/season
+boundaries automatically.
+
 ### Termux/Android playback port
 **Choice:** Detached loopback relay child (`run_android_relay` via `--_android-relay-config`) plus intent dispatch in `Playback`; `android_auto` asks Android's resolver first, explicit `vlc`/`mpv` modes pin `org.videolan.vlc` / `is.xyz.mpv`; `termux-open` chooser and existing-`rish` retry are fallbacks only.
 **Status:** Current (0.5.1 rework; live-device verified 2026-09-24). Supersedes the 0.5.0 in-process `AndroidMediaRelay` with `pm path` preflight gating.
