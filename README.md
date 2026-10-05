@@ -337,6 +337,8 @@ ani-py --skip "frieren"
 
 ani-py calls `ani-skip -i <mal-id> -e <episode>` when the active provider exposes a MAL id. Android intent players, VLC, IINA, and generic custom players do not receive ani-skip mpv flags.
 
+For desktop mpv, ani-py parses ani-skip's output itself: chapter markers are passed as mpv chapters, and skip intervals are driven by a small embedded mpv script (`ani-py-skip.lua` in the state directory) reading a per-session `<socket>.skip` state file. The user's own `skip.lua` is left in place but receives no script-opts, so its intervals never fire.
+
 ## Configuration
 
 Common environment variables:

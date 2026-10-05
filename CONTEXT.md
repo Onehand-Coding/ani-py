@@ -246,13 +246,29 @@ runtime design).
 
 ### mpv-first playback with private IPC
 **Choice:** mpv primary; per-process private IPC socket; episode queues
-run foreground with keep-open disabled; `--skip` forces a fresh process only
-when ani-skip actually produced flags for that episode.
+run foreground with keep-open disabled; episode switches use in-place IPC
+`loadfile` even with `--skip`. ani-py parses ani-skip's flags itself and
+feeds the intervals to an embedded mpv script over a small per-session state
+file;
+`--chapters-file` is passed via `loadfile`'s per-file options (mpv >= 0.38)
+with a legacy three-argument fallback. The last window shape (fullscreen,
+geometry, autofit) is captured over IPC before a restart and re-applied as
+CLI flags on the next launch from `~/.local/state/ani-py/window-state.json`.
 **Status:** Current
-**Reason:** In-place IPC replace can't carry episode-specific ani-skip
-flags safely; private socket avoids hijacking the user's mpv. The `--skip`
-exception narrowed once the skip flags were cached per episode: a missing or
-failing ani-skip produces no flags to apply, so restarting bought nothing.
+**Reason:** An in-place window kept its fullscreen/geometry across episodes,
+while the `--skip` restart path respawned mpv at the mpv.conf geometry and
+dropped the toggled window state. Private socket avoids hijacking the user's
+mpv. Caching `_skip_args` per `(mal_id, episode)` narrowed the restart path
+down to ani-skip episodes; the embedded script removes that restart too.
+
+Skip intervals are not passed to mpv's user script-opts anymore; ani-py
+extracts them from ani-skip's stdout into the private `<socket>.skip` state
+file (sitting next to the IPC socket in `$XDG_RUNTIME_DIR` or the systemd
+runtime dir, per the socket's location) and embeds
+`~/.local/state/ani-py/ani-py-skip.lua`, which re-reads intervals on every
+mpv file-loaded event. The Lua state-file parser must accept `%w_` keys
+(`op_start`) — Lua's `%w` does not include the underscore, and using it
+silently zero-fills the intervals.
 
 ### History records completion, not merely what was opened (2026.10.4)
 **Choice:** `HistoryEntry` carries a `completed` flag, persisted as a trailing
@@ -362,10 +378,17 @@ boundaries automatically.
   and leaves genuine mid-episode resumes alone. It is applied on both the
   launch path and the `loadfile` path, because mpv re-applies the saved
   position on every file it opens.
-- *`replace()` restarts mpv only when ani-skip actually produced flags for the
-  new episode* (`_skip_args` is cached per `(mal_id, episode)`). Previously any
-  `--skip` forced a restart, even when ani-skip was missing or failed and there
-  were no flags to apply.
+- *`replace()` stays in-place even when ani-skip returned flags* (`_skip_args`
+  is cached per `(mal_id, episode)`). Before this change, any episode with
+  ani-skip flags restarted mpv entirely, which dropped fullscreen and any
+  other live window state. The embedded skip-runtime is re-synced via the
+  `ani-py-*` skip-state file instead.
+- *Switching episodes re-uses the same mpv window whenever possible.* A fresh
+  process only starts if IPC is gone or the switch fails; the previous
+  window's `fullscreen`/`geometry`/`autofit` is captured over IPC right
+  before teardown into `window-state.json` and re-applied as CLI flags, so a
+  fullscreen auto-next run does not revert to the mpv.conf geometry.
+
 - *Episode switches drop the previous episode's external subtitle tracks*
   (`_clear_external_subtitles`) so a new episode cannot fall back to the last
   one's subs. Embedded tracks stay; they belong to the file mpv is playing.

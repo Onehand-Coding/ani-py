@@ -1,5 +1,6 @@
 import argparse
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -89,14 +90,39 @@ class TestAniSkip(unittest.TestCase):
             stderr="",
         )
         pb = self.make_playback()
-        cmd = pb._mpv_command(
-            ani_py.Stream("1080p", "https://cdn.example/video.m3u8"),
-            title="Episode", subtitle=None, referer="https://embed.example/",
-            mal_id="52299", episode="5", keep_open=True,
+        with patch.dict("os.environ", {"ANI_PY_HIST_DIR": tempfile.gettempdir()}):
+            cmd = pb._mpv_command(
+                ani_py.Stream("1080p", "https://cdn.example/video.m3u8"),
+                title="Episode", subtitle=None, referer="https://embed.example/",
+                mal_id="52299", episode="5", keep_open=True,
+            )
+        # With the embed alive, chapters ride the launch command and the
+        # intervals go through the skip-state file instead of script-opts.
+        self.assertIn("--chapters-file=/tmp/c", cmd)
+        self.assertFalse(any(a.startswith("--script-opts") for a in cmd))
+        self.assertEqual(cmd[-1], "https://cdn.example/video.m3u8")
+        self.assertTrue(
+            any(a.startswith("--script=") and a.endswith("ani-py-skip.lua") for a in cmd)
         )
+
+    @patch("ani_py.run_capture")
+    @patch("ani_py.shutil.which", return_value="/usr/bin/ani-skip")
+    @patch.object(ani_py.Playback, "_ipc_supported", return_value=False)
+    def test_skip_flags_fall_back_to_script_opts_when_script_is_unwritable(self, mock_ipc, mock_which, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="--chapters-file=/tmp/c --script-opts=skip-op_start=10,skip-op_end=90\n",
+            stderr="",
+        )
+        pb = self.make_playback()
+        with patch.object(pb, "_ensure_skip_script", return_value=None):
+            cmd = pb._mpv_command(
+                ani_py.Stream("1080p", "https://cdn.example/video.m3u8"),
+                title="Episode", subtitle=None, referer="https://embed.example/",
+                mal_id="52299", episode="5", keep_open=True,
+            )
         self.assertIn("--chapters-file=/tmp/c", cmd)
         self.assertIn("--script-opts=skip-op_start=10,skip-op_end=90", cmd)
-        self.assertEqual(cmd[-1], "https://cdn.example/video.m3u8")
 
 
 if __name__ == "__main__":
