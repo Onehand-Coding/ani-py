@@ -620,7 +620,9 @@ class TestPlayers(unittest.TestCase):
         self.assertIsNone(ani_py.parse_skip_flags([]))
 
     def test_window_flags_require_matching_state(self):
-        pb = ani_py.Playback(args(player="mpv"))
+        with tempfile.TemporaryDirectory() as td, patch("ani_py.which_first", return_value="/usr/bin/mpv"), \
+                patch.dict("os.environ", {"ANI_PY_HIST_DIR": td}):
+            pb = ani_py.Playback(args(player="mpv"))
         self.assertEqual(pb._window_flags(), [])
         pb._window_state = {
             "fullscreen": True,
