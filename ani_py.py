@@ -44,7 +44,7 @@ APP_NAME = "ani-py"
 # Calendar version (CalVer): the date the most recent user-visible change landed.
 # Monotonic by construction and comparable across automated release snapshots.
 # Bump it in the same commit as the change - see "Versioning" in CONTRIBUTING.md.
-VERSION = "2026.10.4"
+VERSION = "2026.10.5"
 # How many consecutive failed mpv IPC polls wait_for_completion tolerates before
 # declaring the socket dead. mpv answers "property unavailable" for a few
 # milliseconds after its socket appears but before the first file loads, so one
