@@ -414,11 +414,11 @@ class TestAppFlow(unittest.TestCase):
             ["  1  One"],
             ["Episode 2"],
         ]
+        app.menu.prompt_text.return_value = "one"
 
-        with patch("ani_py.input", return_value="one"):
-            with patch("ani_py.sys.stderr", new=io.StringIO()):
-                with patch("ani_py.sys.stdout", new=io.StringIO()):
-                    selected = app._search_another_anime()
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            with patch("ani_py.sys.stdout", new=io.StringIO()):
+                selected = app._search_another_anime()
 
         self.assertEqual(selected, (found[0], episodes, episodes[1]))
         app.providers.search.assert_called_once_with("one", "auto")

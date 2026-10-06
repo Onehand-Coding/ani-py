@@ -44,14 +44,23 @@ class TestCoreHelpers(unittest.TestCase):
                 ani_py.SubtitleTrack("https://subs/signs.vtt", "en", "Signs & Songs"),
             ],
         )
-        self.assertEqual(ani_py.choose_subtitle_track(bundle, "de").url, "https://subs/de.vtt")
+        de_track = ani_py.choose_subtitle_track(bundle, "de")
+        if de_track is None:
+            self.fail("expected a German subtitle track")
+        self.assertEqual(de_track.url, "https://subs/de.vtt")
+        label_track = ani_py.choose_subtitle_track(bundle, "label:Signs & Songs")
+        if label_track is None:
+            self.fail("expected a label-matched subtitle track")
         self.assertEqual(
-            ani_py.choose_subtitle_track(bundle, "label:Signs & Songs").url,
+            label_track.url,
             "https://subs/signs.vtt",
         )
         self.assertIsNone(ani_py.choose_subtitle_track(bundle, "off"))
         self.assertIsNone(ani_py.choose_subtitle_track(bundle, "fr"))
-        self.assertEqual(ani_py.choose_subtitle_track(bundle, "auto").url, "https://subs/en.vtt")
+        auto_track = ani_py.choose_subtitle_track(bundle, "auto")
+        if auto_track is None:
+            self.fail("expected an auto subtitle track")
+        self.assertEqual(auto_track.url, "https://subs/en.vtt")
 
     def test_parse_episode_spec_single(self):
         result = ani_py.parse_episode_spec('3', self.episodes)
@@ -72,6 +81,20 @@ class TestCoreHelpers(unittest.TestCase):
     def test_parse_episode_spec_decimal_range(self):
         result = ani_py.parse_episode_spec('4-5.5', self.episodes)
         self.assertEqual([e.number for e in result], ['4', '5.5'])
+
+    def test_parse_episode_spec_mixed_lists(self):
+        self.assertEqual([e.number for e in ani_py.parse_episode_spec('1,3,4', self.episodes)], ['1', '3', '4'])
+        self.assertEqual([e.number for e in ani_py.parse_episode_spec('2 5.5', self.episodes)], ['2', '5.5'])
+        self.assertEqual([e.number for e in ani_py.parse_episode_spec('1,3-4', self.episodes)], ['1', '3', '4'])
+
+    def test_parse_episode_spec_spaces_around_dash(self):
+        self.assertEqual([e.number for e in ani_py.parse_episode_spec('2 - 4', self.episodes)], ['2', '3', '4'])
+
+    def test_parse_episode_spec_mixed_invalid_part_fails_all(self):
+        self.assertEqual(ani_py.parse_episode_spec('1,bogus', self.episodes), [])
+
+    def test_parse_episode_spec_dedupes(self):
+        self.assertEqual([e.number for e in ani_py.parse_episode_spec('1,3,3', self.episodes)], ['1', '3'])
 
     def test_format_rows(self):
         anime_rows, anime_map = ani_py.format_anime_rows([ani_py.Anime('frieren-1', 'Frieren')])
