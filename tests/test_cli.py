@@ -177,6 +177,8 @@ class TestUpdateCommand(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(target.read_bytes(), REMOTE_COPY)
             self.assertIn(str(target), output)
+            self.assertIn("2026.9.29", output)
+            self.assertIn("2026.9.30", output)
 
     def test_replacement_stays_executable_and_leaves_no_temp_files(self):
         with tempfile.TemporaryDirectory() as tmp:

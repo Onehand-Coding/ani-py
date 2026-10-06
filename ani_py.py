@@ -44,7 +44,7 @@ APP_NAME = "ani-py"
 # Calendar version (CalVer): the date the most recent user-visible change landed.
 # Monotonic by construction and comparable across automated release snapshots.
 # Bump it in the same commit as the change - see "Versioning" in CONTRIBUTING.md.
-VERSION = "2026.10.5"
+VERSION = "2026.10.6"
 # How many consecutive failed mpv IPC polls wait_for_completion tolerates before
 # declaring the socket dead. mpv answers "property unavailable" for a few
 # milliseconds after its socket appears but before the first file loads, so one
@@ -1653,6 +1653,21 @@ class Menu:
         if header:
             print(f"\n{header}")
         return self._numbered(items, prompt, multi=multi)
+
+    def prompt_text(self, prompt: str) -> Optional[str]:
+        """Free-text query prompt. rofi/dmenu open their own prompt windows;
+        anything else (fzf selection frontends, plain terminal) reads from stdin."""
+        if self.program == "rofi":
+            proc = run_capture(["rofi", "-dmenu", "-i", "-p", prompt.rstrip()] + self.extra, input_text="")
+            return proc.stdout.strip() if proc.returncode == 0 else None
+        if self.program == "dmenu":
+            proc = run_capture(["dmenu", "-p", prompt.rstrip()] + self.extra, input_text="")
+            return proc.stdout.strip() if proc.returncode == 0 else None
+        try:
+            return input(sty(prompt + " ", C.BOLD)).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
 
     def _numbered(self, items: Sequence[str], prompt: str, *, multi: bool) -> list[str]:
         print()
@@ -3903,16 +3918,34 @@ def episode_index(episodes: Sequence[Episode], number: str) -> Optional[int]:
 def parse_episode_spec(spec: str, episodes: Sequence[Episode]) -> list[Episode]:
     if not spec:
         return []
+    # A spec mixes single episodes and ranges: "4", "4-9", "0", "-1",
+    # and also "5 6", "1,3,5-7", "2:4 8". Ranges keep the "-", ":", ".." forms.
+    collapsed = re.sub(r"\s*([-:])\s*", r"\1", spec.strip())
+    collapsed = re.sub(r"\s*(\.\.)\s*", r"\1", collapsed)
     numbers = [ep.number for ep in episodes]
-    if spec == "0":
-        return [episodes[0]] if episodes else []
-    if spec == "-1":
-        return [episodes[-1]] if episodes else []
-    if spec in numbers:
-        return [episodes[numbers.index(spec)]]
+    selected: list[Episode] = []
+    for part in re.split(r"[,\s]+", collapsed):
+        if not part:
+            continue
+        parsed = _parse_episode_token(part, episodes, numbers)
+        if not parsed:
+            return []
+        for ep in parsed:
+            if ep.number not in [e.number for e in selected]:
+                selected.append(ep)
+    return selected
 
-    # Accept 2-5, 2:5, 2..5; episode identifiers may themselves be decimal.
-    m = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*(?:-|:|\.\.)\s*(-?\d+(?:\.\d+)?)\s*", spec)
+
+def _parse_episode_token(part: str, episodes: Sequence[Episode], numbers: Sequence[str]) -> list[Episode]:
+    if part == "0":
+        return [episodes[0]] if episodes else []
+    if part == "-1":
+        return [episodes[-1]] if episodes else []
+    if part in numbers:
+        return [episodes[numbers.index(part)]]
+
+    # Episode identifiers may themselves be decimal: 2-5, 2:5, 2..5.
+    m = re.fullmatch(r"(-?\d+(?:\.\d+)?)(?:-|:|\.\.)(-?\d+(?:\.\d+)?)", part)
     if m:
         start, end = m.groups()
         start = numbers[0] if start == "0" else numbers[-1] if start == "-1" else start
@@ -4162,10 +4195,8 @@ class App:
         clear_screen()
         banner("Search another anime")
         print()
-        try:
-            query = input(sty("  Search › ", C.BOLD, C.CYAN)).strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
+        query = self.menu.prompt_text("  Search ›")
+        if query is None:
             return None
         if not query:
             return None
@@ -4856,10 +4887,8 @@ class App:
                 clear_screen()
                 banner("Search • select • watch")
                 print()
-                try:
-                    query = input(sty("  Search › ", C.BOLD, C.CYAN)).strip()
-                except (EOFError, KeyboardInterrupt):
-                    print()
+                query = self.menu.prompt_text("  Search ›")
+                if query is None:
                     return 130
             if not query:
                 return 0
@@ -4997,7 +5026,8 @@ def run_update(http: Optional[HttpClient] = None, target: Optional[Path] = None)
 
     print(
         f"updated {path} from the latest release "
-        f"({len(local)} -> {len(remote)} bytes, sha {digest[:7]})"
+        f"({local_version or 'unknown'} -> {remote_version or 'unknown'}, "
+        f"{len(local)} -> {len(remote)} bytes, sha {digest[:7]})"
     )
     print("re-run the installer with --deps if you are missing external tools")
     return 0

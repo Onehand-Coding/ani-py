@@ -62,6 +62,23 @@ class TestMenus(unittest.TestCase):
         self.assertIn("--info=hidden", cmd)
         self.assertIn("--header", cmd)
 
+    @patch("ani_py.run_capture")
+    @patch("ani_py.shutil.which", return_value="/usr/bin/rofi")
+    def test_prompt_text_rofi(self, mock_which, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="frieren\n", stderr="")
+        menu = ani_py.Menu("rofi")
+        self.assertEqual(menu.prompt_text("  Search ›"), "frieren")
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[0], "rofi")
+        self.assertIn("-dmenu", cmd)
+
+    @patch("ani_py.run_capture")
+    @patch("ani_py.shutil.which", return_value="/usr/bin/dmenu")
+    def test_prompt_text_dmenu_cancel_returns_none(self, mock_which, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+        menu = ani_py.Menu("dmenu")
+        self.assertIsNone(menu.prompt_text("  Search ›"))
+
 
 if __name__ == "__main__":
     unittest.main()

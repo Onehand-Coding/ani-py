@@ -155,10 +155,11 @@ personal CLI.
 **Reason:** Works without API keys; isolation keeps markup churn cheap.
 **Alternatives Considered:** Multi-provider (deferred - see §1 direction).
 
-### Independent fork as its own repo
-**Choice:** Own copy instead of contributing AI-generated code upstream.
+### Independent repo as its own project
+**Choice:** Own repo and own direction, instead of contributing AI-generated code upstream.
 **Status:** Current
 **Reason:** Upstream repos don't want AI-generated code; full freedom to modify.
+**Note:** ani-py is an independent, MIT-licensed implementation inspired by ani-cli and other terminal anime launchers, not a code fork of ani-cli. "Upstream" elsewhere in this file means ani-py's original upstream line (v0.5.2-rc11 era), never ani-cli.
 
 ### hianime-only default (v0.5.0 divergence)
 **Choice:** This checkout keeps `--provider-order` default at `hianime` even
