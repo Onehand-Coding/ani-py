@@ -226,6 +226,12 @@ after an episode ends may still be recorded as unfinished.
 If you quit mid-episode, on purpose or by closing the window, the episode stays
 marked unfinished and `--continue` resumes it with mpv's saved position.
 
+To prune history, `ani-py --forget` shows the same list as `--continue`, but in
+multi-select: tab the entries you want gone, press Enter, and confirm. It uses
+whatever menu frontend you already have, so with fzf you tab to toggle and with
+the plain-terminal fallback you type `2,5-7`. `ani-py -D` still wipes everything
+at once when that is what you want.
+
 ## Termux / Android
 
 ```sh

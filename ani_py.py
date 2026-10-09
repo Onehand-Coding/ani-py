@@ -44,7 +44,7 @@ APP_NAME = "ani-py"
 # Calendar version (CalVer): the date the most recent user-visible change landed.
 # Monotonic by construction and comparable across automated release snapshots.
 # Bump it in the same commit as the change - see "Versioning" in CONTRIBUTING.md.
-VERSION = "2026.10.6"
+VERSION = "2026.10.10"
 # How many consecutive failed mpv IPC polls wait_for_completion tolerates before
 # declaring the socket dead. mpv answers "property unavailable" for a few
 # milliseconds after its socket appears but before the first file loads, so one
@@ -1479,6 +1479,18 @@ class HistoryStore:
                     HistoryEntry(episode, anime.provider, anime.provider_id, anime.title, completed)
                 )
             self.save(entries)
+
+    def remove(self, entries: Sequence[HistoryEntry]) -> int:
+        doomed = {(e.provider, e.provider_id) for e in entries}
+        if not doomed:
+            return 0
+        with self._lock:
+            existing = self.load()
+            kept = [e for e in existing if (e.provider, e.provider_id) not in doomed]
+            if len(kept) == len(existing):
+                return 0
+            self.save(kept)
+            return len(existing) - len(kept)
 
     def clear(self) -> None:
         self.path.write_text("", encoding="utf-8")
@@ -4029,37 +4041,69 @@ class App:
         ok(f"Selected {chosen.title}  [{provider.display_name}]")
         return chosen
 
-    def _from_history(self) -> tuple[Anime, str, bool]:
-        entries = self.history.load()
-        if not entries:
-            fail("History is empty.")
-        rows = [
+    @staticmethod
+    def _history_rows(entries: Sequence[HistoryEntry]) -> list[str]:
+        return [
             f"{e.title}  {sty('•', C.DIM)}  Episode {e.episode} "
             f"{'watched' if e.completed else 'unfinished'}  "
             f"{sty('• ' + e.provider, C.DIM)}"
             for e in entries
         ]
+
+    def _entry_for_pick(
+        self, picks: Sequence[str], rows: Sequence[str], entries: Sequence[HistoryEntry]
+    ) -> HistoryEntry:
         mapping = dict(zip(rows, entries))
+        if picks[0] in mapping:
+            return mapping[picks[0]]
+        # fzf --ansi strips ANSI codes from its output, so fall back
+        # to an ANSI-insensitive match before giving up.
+        stripped_rows = [_strip_ansi(r) for r in rows]
+        needle = _strip_ansi(picks[0])
+        if needle in stripped_rows:
+            return entries[stripped_rows.index(needle)]
+        fail("History selection did not match any entry.")
+        raise SystemExit(1)
+
+    def _from_history(self) -> tuple[Anime, str, bool]:
+        entries = self.history.load()
+        if not entries:
+            fail("History is empty.")
+        rows = self._history_rows(entries)
         picked = self.menu.choose(rows, "Continue › ")
         if not picked:
             raise SystemExit(0)
-        if picked[0] in mapping:
-            entry = mapping[picked[0]]
-        else:
-            # fzf --ansi strips ANSI codes from its output, so fall back
-            # to an ANSI-insensitive match before giving up.
-            stripped_rows = [_strip_ansi(r) for r in rows]
-            needle = _strip_ansi(picked[0])
-            if needle in stripped_rows:
-                entry = entries[stripped_rows.index(needle)]
-            else:
-                fail("History selection did not match any entry.")
-                raise SystemExit(1)
+        entry = self._entry_for_pick(picked, rows, entries)
         return (
             Anime(entry.provider_id, entry.title, entry.provider),
             entry.episode,
             entry.completed,
         )
+
+    def _forget_history(self) -> int:
+        entries = self.history.load()
+        if not entries:
+            fail("History is empty.")
+        rows = self._history_rows(entries)
+        picks = self.menu.choose(rows, "Forget › ", multi=True)
+        if not picks:
+            warn("Nothing removed.")
+            return 0
+        doomed: list[HistoryEntry] = []
+        seen: set[tuple[str, str]] = set()
+        for row in picks:
+            entry = self._entry_for_pick([row], rows, entries)
+            key = (entry.provider, entry.provider_id)
+            if key not in seen:
+                seen.add(key)
+                doomed.append(entry)
+        answer = self.menu.prompt_text(f"Remove {len(doomed)} entries? [y/N] › ")
+        if answer is None or answer.strip().lower() not in ("y", "yes"):
+            warn("Nothing removed.")
+            return 0
+        removed = self.history.remove(doomed)
+        ok(f"Removed {removed} {'entry' if removed == 1 else 'entries'}.")
+        return removed
 
     @staticmethod
     def _match_score(left: str, right: str) -> float:
@@ -4835,6 +4879,10 @@ class App:
             ok("History cleared.")
             return 0
 
+        if self.args.forget:
+            self._forget_history()
+            return 0
+
         if self.args.list_providers:
             names = list(dict.fromkeys(list(self.providers.order) + list(self.providers.providers)))
             for name in names:
@@ -5093,6 +5141,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--attach", action="store_true", help="reattach controls to the last detached desktop mpv session")
     parser.add_argument("-d", "--download", action="store_true", help="download instead of play")
     parser.add_argument("-D", "--delete-history", dest="clear_history", action="store_true", help="clear watch history")
+    parser.add_argument(
+        "--forget",
+        action="store_true",
+        help="pick individual history entries to remove, instead of clearing all of them",
+    )
     parser.add_argument("-e", "--episode", "-r", "--range", dest="episode", help="episode or range, e.g. 4 or 4-9")
     parser.add_argument("-q", "--quality", default=os.getenv("ANI_PY_QUALITY", "best"), help="best, worst, 360, 480, 720, 1080")
     parser.add_argument("--sub-lang", default=os.getenv("ANI_PY_SUB_LANG", "auto"), help="subtitle language/label for playback/downloads, or auto/off")

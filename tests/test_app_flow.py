@@ -30,6 +30,7 @@ def _mock(app: object, name: str) -> Mock:
 def app_args(**overrides):
     base = dict(
         clear_history=False,
+        forget=False,
         continue_watching=False,
         query=["frieren"],
         quality="best",
@@ -682,6 +683,65 @@ class TestAppFlow(unittest.TestCase):
         with patch("ani_py.sys.stderr", new=io.StringIO()):
             self.assertEqual(app.run(), 0)
         app.history.clear.assert_called_once()
+
+    def _forget_app(self, entries, picks, answer="y"):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(forget=True, query=[])
+        app.history = Mock()
+        app.history.load.return_value = entries
+        app.menu = Mock()
+        app.menu.choose.side_effect = lambda rows, prompt, **kw: [rows[i] for i in picks]
+        app.menu.prompt_text.return_value = answer
+        return app
+
+    def test_forget_removes_only_picked_entries(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+            ani_py.HistoryEntry("4", "hianime", "one-piece-100", "One Piece", False),
+        ]
+        app = self._forget_app(entries, picks=[1])
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        _mock(app.menu, "choose").assert_called_once()
+        self.assertTrue(_mock(app.menu, "choose").call_args.kwargs["multi"])
+        _mock(app.history, "remove").assert_called_once_with([entries[1]])
+
+    def test_forget_cancelled_at_prompt_writes_nothing(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+        ]
+        app = self._forget_app(entries, picks=[0], answer="n")
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        _mock(app.history, "remove").assert_not_called()
+
+    def test_forget_with_nothing_picked_writes_nothing(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+        ]
+        app = self._forget_app(entries, picks=[])
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        _mock(app.menu, "prompt_text").assert_not_called()
+        _mock(app.history, "remove").assert_not_called()
+
+    def test_forget_never_reaches_search(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+        ]
+        app = self._forget_app(entries, picks=[0])
+        app._search_anime = Mock()
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        _mock(app, "_search_anime").assert_not_called()
+
+    def test_forget_empty_history_fails(self):
+        app = self._forget_app([], picks=[])
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                app.run()
+        self.assertEqual(ctx.exception.code, 1)
+        _mock(app.history, "remove").assert_not_called()
 
 
 if __name__ == "__main__":
