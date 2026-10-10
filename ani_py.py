@@ -4050,6 +4050,16 @@ class App:
             for e in entries
         ]
 
+    @staticmethod
+    def _ordered_history(entries: Sequence[HistoryEntry], sort: Optional[str]) -> list[HistoryEntry]:
+        # Display-only: the file stays oldest-first. --sort recent shows
+        # newest first, --sort alpha orders by title A-Z.
+        if sort == "recent":
+            return list(reversed(entries))
+        if sort == "alpha":
+            return sorted(entries, key=lambda e: e.title.lower())
+        return list(entries)
+
     def _entry_for_pick(
         self, picks: Sequence[str], rows: Sequence[str], entries: Sequence[HistoryEntry]
     ) -> HistoryEntry:
@@ -4066,7 +4076,7 @@ class App:
         raise SystemExit(1)
 
     def _from_history(self) -> tuple[Anime, str, bool]:
-        entries = self.history.load()
+        entries = self._ordered_history(self.history.load(), getattr(self.args, "sort", None))
         if not entries:
             fail("History is empty.")
         rows = self._history_rows(entries)
@@ -4081,7 +4091,7 @@ class App:
         )
 
     def _forget_history(self) -> int:
-        entries = self.history.load()
+        entries = self._ordered_history(self.history.load(), getattr(self.args, "sort", None))
         if not entries:
             fail("History is empty.")
         rows = self._history_rows(entries)
@@ -5145,6 +5155,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--forget",
         action="store_true",
         help="pick individual history entries to remove, instead of clearing all of them",
+    )
+    parser.add_argument(
+        "--sort",
+        choices=["recent", "alpha"],
+        default=None,
+        help="order history lists for -c/--forget (display only): recent = newest first, alpha = title A-Z",
     )
     parser.add_argument("-e", "--episode", "-r", "--range", dest="episode", help="episode or range, e.g. 4 or 4-9")
     parser.add_argument("-q", "--quality", default=os.getenv("ANI_PY_QUALITY", "best"), help="best, worst, 360, 480, 720, 1080")

@@ -46,6 +46,7 @@ def app_args(**overrides):
         select_nth=None,
         episode=None,
         mode="sub",
+        sort=None,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -356,10 +357,56 @@ class TestAppFlow(unittest.TestCase):
             used_anime, episodes, selected = app._pick_episodes(anime, last)
         self.assertEqual(selected[0].number, "2")
 
+    def test_from_history_default_keeps_file_order(self):
+        app = object.__new__(ani_py.App)
+        app.args = argparse.Namespace(episode=None, provider="auto", select_nth=None, sort=None)
+        app.history = Mock()
+        app.history.load.return_value = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren"),
+            ani_py.HistoryEntry("4", "hianime", "one-piece-1", "One Piece"),
+        ]
+        app.menu = Mock()
+        app.menu.choose.side_effect = lambda rows, *a, **k: [rows[0]]
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            anime, last, completed = app._from_history()
+        self.assertEqual(anime.slug, "frieren-999")
+        self.assertEqual(last, "1")
+
+    def test_from_history_sort_recent_shows_newest_first(self):
+        app = object.__new__(ani_py.App)
+        app.args = argparse.Namespace(episode=None, provider="auto", select_nth=None, sort="recent")
+        app.history = Mock()
+        app.history.load.return_value = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren"),
+            ani_py.HistoryEntry("4", "hianime", "one-piece-1", "One Piece"),
+        ]
+        app.menu = Mock()
+        app.menu.choose.side_effect = lambda rows, *a, **k: [rows[0]]
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            anime, last, completed = app._from_history()
+        self.assertEqual(anime.slug, "one-piece-1")
+        self.assertEqual(last, "4")
+
+    def test_from_history_sort_alpha_orders_by_title(self):
+        app = object.__new__(ani_py.App)
+        app.args = argparse.Namespace(episode=None, provider="auto", select_nth=None, sort="alpha")
+        app.history = Mock()
+        app.history.load.return_value = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren"),
+            ani_py.HistoryEntry("2", "hianime", "bleach-1", "Bleach"),
+            ani_py.HistoryEntry("4", "hianime", "one-piece-1", "One Piece"),
+        ]
+        app.menu = Mock()
+        app.menu.choose.side_effect = lambda rows, *a, **k: [rows[0]]
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            anime, last, completed = app._from_history()
+        self.assertEqual(anime.slug, "bleach-1")
+        self.assertEqual(last, "2")
+
     def test_from_history_tolerates_fzf_ansi_stripping(self):
         import re
         app = object.__new__(ani_py.App)
-        app.args = argparse.Namespace(episode=None, provider="auto", select_nth=None)
+        app.args = argparse.Namespace(episode=None, provider="auto", select_nth=None, sort=None)
         app.history = Mock()
         app.history.load.return_value = [
             ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren"),
@@ -376,6 +423,7 @@ class TestAppFlow(unittest.TestCase):
         with patch("ani_py.color_enabled", return_value=True):
             with patch("ani_py.sys.stderr", new=io.StringIO()):
                 anime, last, completed = app._from_history()
+        # File order: rows[0] is Frieren (stored first).
         self.assertEqual(anime.slug, "frieren-999")
         self.assertEqual(last, "1")
         self.assertTrue(completed)
@@ -684,9 +732,9 @@ class TestAppFlow(unittest.TestCase):
             self.assertEqual(app.run(), 0)
         app.history.clear.assert_called_once()
 
-    def _forget_app(self, entries, picks, answer="y"):
+    def _forget_app(self, entries, picks, answer="y", sort=None):
         app = object.__new__(ani_py.App)
-        app.args = app_args(forget=True, query=[])
+        app.args = app_args(forget=True, query=[], sort=sort)
         app.history = Mock()
         app.history.load.return_value = entries
         app.menu = Mock()
@@ -699,11 +747,23 @@ class TestAppFlow(unittest.TestCase):
             ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
             ani_py.HistoryEntry("4", "hianime", "one-piece-100", "One Piece", False),
         ]
+        # File order: rows[1] is One Piece (stored last).
         app = self._forget_app(entries, picks=[1])
         with patch("ani_py.sys.stderr", new=io.StringIO()):
             self.assertEqual(app.run(), 0)
         _mock(app.menu, "choose").assert_called_once()
         self.assertTrue(_mock(app.menu, "choose").call_args.kwargs["multi"])
+        _mock(app.history, "remove").assert_called_once_with([entries[1]])
+
+    def test_forget_sort_recent_shows_newest_first(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+            ani_py.HistoryEntry("4", "hianime", "one-piece-100", "One Piece", False),
+        ]
+        # --sort recent: rows[0] is One Piece (stored last).
+        app = self._forget_app(entries, picks=[0], sort="recent")
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
         _mock(app.history, "remove").assert_called_once_with([entries[1]])
 
     def test_forget_cancelled_at_prompt_writes_nothing(self):
