@@ -68,6 +68,18 @@ class TestHistoryStore(unittest.TestCase):
             self.assertEqual(removed, 1)
             self.assertEqual(store.load(), [])
 
+    def test_update_keeps_file_order_display_only(self):
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {'ANI_PY_HIST_DIR': td}, clear=False):
+            store = ani_py.HistoryStore()
+            store.update(ani_py.Anime('frieren-999', 'Frieren'), '1')
+            store.update(ani_py.Anime('one-piece-100', 'One Piece'), '4')
+            store.update(ani_py.Anime('frieren-999', 'Frieren'), '2')
+            entries = store.load()
+            self.assertEqual(
+                [(e.provider_id, e.episode) for e in entries],
+                [('frieren-999', '2'), ('one-piece-100', '4')],
+            )
+
 
 if __name__ == '__main__':
     unittest.main()

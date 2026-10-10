@@ -317,6 +317,7 @@ it. Completion is the only thing that makes "continue" mean resume.
   down as "did not finish" makes the exit-path record erase the watcher's
   result, so an episode watched to the end and then closed via the X button
   would be replayed by `--continue`. Unknown must never overwrite known.
+- *History sorting is display-only.* The file stays oldest-first and `HistoryStore.update()` edits in place; `-c` and `--forget` share the `_ordered_history` helper so `--sort recent` (newest first) and `--sort alpha` (title A-Z) match in both views. Plain `-c` keeps file order.
 - *`HistoryStore.update()` holds a lock.* The watcher writes from a background
   thread while the main thread may be writing on exit; it is a
   read-modify-write, so an unsynchronised interleaving would drop an episode.
