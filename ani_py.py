@@ -4226,6 +4226,34 @@ class App:
         ok(f"Removed {removed} {'entry' if removed == 1 else 'entries'}.")
         return removed
 
+    def _browse_history(self) -> Optional[tuple[Anime, str, bool]]:
+        while True:
+            entries = self._ordered_history(self.history.load(), getattr(self.args, "sort", None))
+            if not entries:
+                fail("History is empty.")
+            rows = self._history_rows(entries)
+            picked = self.menu.choose(rows, "History › ")
+            if not picked:
+                return None
+            entry = self._entry_for_pick(picked, rows, entries)
+            action = self.menu.choose(["Play", "Forget", "Back"], "Action › ", compact=True)
+            if not action or action[0] == "Back":
+                continue
+            if action[0] == "Forget":
+                answer = self.menu.prompt_text("Remove 1 entry? [y/N] › ")
+                if answer is None or answer.strip().lower() not in ("y", "yes"):
+                    warn("Nothing removed.")
+                    continue
+                removed = self.history.remove([entry])
+                ok(f"Removed {removed} {'entry' if removed == 1 else 'entries'}.")
+                continue
+            if action[0] == "Play":
+                return (
+                    Anime(entry.provider_id, entry.title, entry.provider),
+                    entry.episode,
+                    entry.completed,
+                )
+
     @staticmethod
     def _match_score(left: str, right: str) -> float:
         a, b = _normalize_title(left), _normalize_title(right)
@@ -5004,6 +5032,12 @@ class App:
             self._forget_history()
             return 0
 
+        history_pick: Optional[tuple[Anime, str, bool]] = None
+        if getattr(self.args, "history", False):
+            history_pick = self._browse_history()
+            if history_pick is None:
+                return 0
+
         if self.args.list_providers:
             names = list(dict.fromkeys(list(self.providers.order) + list(self.providers.providers)))
             for name in names:
@@ -5040,7 +5074,8 @@ class App:
             return 1 if result is None else result
 
         if (
-            not self.args.continue_watching
+            history_pick is None
+            and not self.args.continue_watching
             and not self.args.download
             and not self.args.query
         ):
@@ -5048,7 +5083,9 @@ class App:
             if result is not None:
                 return result
 
-        if self.args.continue_watching:
+        if history_pick is not None:
+            anime, continue_after, continue_completed = history_pick
+        elif self.args.continue_watching:
             anime, continue_after, continue_completed = self._from_history()
         else:
             query = " ".join(self.args.query).strip()
@@ -5218,6 +5255,7 @@ def build_parser() -> argparse.ArgumentParser:
     formatter = argparse.RawDescriptionHelpFormatter
     parser = argparse.ArgumentParser(
         prog=APP_NAME,
+        usage="%(prog)s [options] [query ...]",
         formatter_class=formatter,
         description="A polished, standalone Python anime CLI (stdlib only).",
         epilog=textwrap.dedent(
@@ -5227,6 +5265,7 @@ def build_parser() -> argparse.ArgumentParser:
               ani-py -q 1080 -e 3 "dandadan"
               ani-py --dub -e 1-4 "one piece"
               ani-py -c
+              ani-py --history
               ani-py -d -e 1-12 "pluto"
               ani-py --attach
               ani-py --update
@@ -5251,65 +5290,76 @@ def build_parser() -> argparse.ArgumentParser:
             """
         ),
     )
-    parser.add_argument("query", nargs="*", help="anime search query")
-    parser.add_argument(
+    watch = parser.add_argument_group("what to watch")
+    source = parser.add_argument_group("where it comes from")
+    playback = parser.add_argument_group("how it plays")
+    saved = parser.add_argument_group("saved and sessions")
+    interface = parser.add_argument_group("interface")
+    maintenance = parser.add_argument_group("maintenance")
+    watch.add_argument("query", nargs="*", help="anime search query")
+    watch.add_argument(
         "-c",
         "--continue",
         dest="continue_watching",
         action="store_true",
         help="resume the last episode from history; if it was finished, start the next one",
     )
-    parser.add_argument("--attach", action="store_true", help="reattach controls to the last detached desktop mpv session")
-    parser.add_argument("-d", "--download", action="store_true", help="download instead of play")
-    parser.add_argument("-D", "--delete-history", dest="clear_history", action="store_true", help="clear watch history")
-    parser.add_argument(
+    saved.add_argument("-d", "--download", action="store_true", help="download instead of play")
+    saved.add_argument(
+        "--history",
+        action="store_true",
+        help="browse watch history; pick an entry to play it or forget it",
+    )
+    saved.add_argument(
         "--forget",
         action="store_true",
         help="pick individual history entries to remove, instead of clearing all of them",
     )
-    parser.add_argument(
+    saved.add_argument("-D", "--delete-history", dest="clear_history", action="store_true", help="clear watch history")
+    saved.add_argument("--attach", action="store_true", help="reattach controls to the last detached desktop mpv session")
+    watch.add_argument("-e", "--episode", "-r", "--range", dest="episode", help="episode or range, e.g. 4 or 4-9")
+    watch.add_argument("-S", "--select-nth", type=int, help="select search result by index")
+    watch.add_argument(
         "--sort",
         choices=["recent", "alpha"],
         default=None,
-        help="order history lists for -c/--forget (display only): recent = newest first, alpha = title A-Z",
+        help="order history lists for -c/--history/--forget (display only): recent = newest first, alpha = title A-Z",
     )
-    parser.add_argument("-e", "--episode", "-r", "--range", dest="episode", help="episode or range, e.g. 4 or 4-9")
-    parser.add_argument("-q", "--quality", default=os.getenv("ANI_PY_QUALITY", "best"), help="best, worst, 360, 480, 720, 1080")
-    parser.add_argument("--sub-lang", default=os.getenv("ANI_PY_SUB_LANG", "auto"), help="subtitle language/label for playback/downloads, or auto/off")
-    parser.add_argument("-S", "--select-nth", type=int, help="select search result by index")
-    parser.add_argument(
+    playback.add_argument("-q", "--quality", default=os.getenv("ANI_PY_QUALITY", "best"), help="best, worst, 360, 480, 720, 1080")
+    playback.add_argument("--sub-lang", default=os.getenv("ANI_PY_SUB_LANG", "auto"), help="subtitle language/label for playback/downloads, or auto/off")
+    source.add_argument(
         "--provider",
         choices=["auto", "hianime", "anilight"],
         default=os.getenv("ANI_PY_PROVIDER", "auto"),
         help="source provider (default: auto with failover)",
     )
-    parser.add_argument(
+    source.add_argument(
         "--provider-order",
         default=os.getenv("ANI_PY_PROVIDER_ORDER", "hianime"),
         help="comma-separated auto-failover order (default: hianime; AniLight is opt-in)",
     )
-    parser.add_argument("--list-providers", action="store_true", help="show configured providers and exit")
-    parser.add_argument("--dub", dest="mode", action="store_const", const="dub", help="use dubbed stream")
-    parser.add_argument("--sub", dest="mode", action="store_const", const="sub", help="use subtitled stream")
+    source.add_argument("--list-providers", action="store_true", help="show configured providers and exit")
+    source.add_argument("--dub", dest="mode", action="store_const", const="dub", help="use dubbed stream")
+    source.add_argument("--sub", dest="mode", action="store_const", const="sub", help="use subtitled stream")
     parser.set_defaults(mode=os.getenv("ANI_PY_MODE", "sub"))
-    parser.add_argument(
+    playback.add_argument(
         "-p",
         "--player",
         default=os.getenv("ANI_PY_PLAYER"),
         help="player: mpv, vlc, iina, auto, or a custom executable (Android: auto, vlc, mpv)",
     )
-    parser.add_argument("--player-flag", action="append", default=[], help="extra player argument (repeatable; use --player-flag='--flag' for dash-flags)")
-    parser.add_argument("--ipc-socket", help="mpv IPC socket path (default: private per ani-py process)")
-    parser.add_argument("--menu", choices=["fzf", "rofi", "dmenu"], help="interactive menu frontend")
-    parser.add_argument("--menu-flags", default="", help="extra menu frontend flags (use --menu-flags='--flag' for dash-flags)")
-    parser.add_argument("--skip", action="store_true", default=os.getenv("ANI_PY_SKIP_INTRO", "0") == "1", help="use ani-skip with mpv")
-    parser.add_argument(
+    playback.add_argument("--player-flag", action="append", default=[], help="extra player argument (repeatable; use --player-flag='--flag' for dash-flags)")
+    playback.add_argument("--ipc-socket", help="mpv IPC socket path (default: private per ani-py process)")
+    interface.add_argument("--menu", choices=["fzf", "rofi", "dmenu"], help="interactive menu frontend")
+    interface.add_argument("--menu-flags", default="", help="extra menu frontend flags (use --menu-flags='--flag' for dash-flags)")
+    playback.add_argument("--skip", action="store_true", default=os.getenv("ANI_PY_SKIP_INTRO", "0") == "1", help="use ani-skip with mpv")
+    playback.add_argument(
         "--auto-next",
         action="store_true",
         default=os.getenv("ANI_PY_AUTO_NEXT", "0") == "1",
         help="auto-play following episodes after natural EOF (desktop mpv IPC only)",
     )
-    parser.add_argument(
+    playback.add_argument(
         "--auto-next-limit",
         type=int,
         default=env_int("ANI_PY_AUTO_NEXT_LIMIT", AUTO_NEXT_DEFAULT_LIMIT),
@@ -5319,22 +5369,22 @@ def build_parser() -> argparse.ArgumentParser:
             "range is never trimmed"
         ),
     )
-    parser.add_argument("--no-detach", action="store_true", default=os.getenv("ANI_PY_NO_DETACH", "0") == "1", help="keep player attached")
-    parser.add_argument("--exit-after-play", action="store_true", default=os.getenv("ANI_PY_EXIT_AFTER_PLAY", "0") == "1", help="exit after player closes/launches")
-    parser.add_argument(
+    playback.add_argument("--no-detach", action="store_true", default=os.getenv("ANI_PY_NO_DETACH", "0") == "1", help="keep player attached")
+    playback.add_argument("--exit-after-play", action="store_true", default=os.getenv("ANI_PY_EXIT_AFTER_PLAY", "0") == "1", help="exit after player closes/launches")
+    interface.add_argument(
         "--android-debug",
         action="store_true",
         default=os.getenv("ANI_PY_ANDROID_DEBUG", "0") == "1",
         help="print Android playback/relay diagnostics to stderr (harmless off Android)",
     )
-    parser.add_argument(
+    maintenance.add_argument(
         "-U",
         "--update",
         action="store_true",
         help="replace this script with the latest verified release and exit",
     )
     parser.add_argument("--_android-relay-config", help=argparse.SUPPRESS)
-    parser.add_argument("-V", "--version", action="version", version=f"{APP_NAME} {VERSION}")
+    maintenance.add_argument("-V", "--version", action="version", version=f"{APP_NAME} {VERSION}")
     return parser
 
 
