@@ -598,6 +598,12 @@ semver cannot creep back in.
   `embed_url` (megaplay.buzz, same `data-id` + `stream/getSources` + AES
   backend HiAnime drives). A search-only live check cannot catch this class
   of breakage; resolve must be exercised, not just search.
+- AniLight's API answers anonymously from a home network but serves a
+  Cloudflare browser challenge (HTTP 403) to GitHub runner IPs, verified
+  twice 2026.10.11. So the weekly scheduled check reliably watches the
+  default HiAnime chain and only best-efforts AniLight; probe AniLight
+  manually from an ungated network with
+  `./scripts/check-providers-live.sh`.
 
 ### CLI parsing
 - `--menu-flags --exact` fails (`expected one argument`) - argparse won't
