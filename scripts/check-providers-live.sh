@@ -58,6 +58,36 @@ for provider in providers:
     for anime in results[:3]:
         print(f"        {anime.title[:70]}")
 
+    # Search alone cannot catch a broken resolve (e.g. AniLight 2026.10.11:
+    # search/watch answer anonymously while /sources answers HTTP 403 behind
+    # Turnstile). Exercise episodes + first-episode resolve on the first
+    # title that lists episodes.
+    resolved = None
+    for anime in results[:3]:
+        try:
+            episodes = provider.episodes(anime)
+        except ani_py.AniPyError as exc:
+            print(f"[{'FAIL' if required else 'warn'}] {label}: episodes failed for {anime.title[:50]!r}: {exc}")
+            continue
+        except Exception as exc:
+            print(f"[{'FAIL' if required else 'warn'}] {label}: episodes failed: {type(exc).__name__}: {exc}")
+            continue
+        if not episodes:
+            continue
+        try:
+            resolved = provider.resolve(anime, episodes[0], "sub")
+        except ani_py.AniPyError as exc:
+            print(f"[{'FAIL' if required else 'warn'}] {label}: resolve failed for {anime.title[:50]!r}: {exc}")
+            continue
+        except Exception as exc:
+            print(f"[{'FAIL' if required else 'warn'}] {label}: resolve failed: {type(exc).__name__}: {exc}")
+            continue
+        print(f"[ok] {label} resolved {anime.title[:50]!r} ep {episodes[0].number} "
+              f"({len(resolved.streams)} stream(s))")
+        break
+    if resolved is None:
+        failures.append((label + " resolve", required))
+
 if failures:
     blocking = [name for name, required in failures if required]
     if blocking:

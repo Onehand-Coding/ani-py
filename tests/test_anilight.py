@@ -3,17 +3,29 @@ import unittest
 import ani_py
 
 
-class FakeAniLightHttp:
+class FakeAniLightHttp(ani_py.HttpClient):
     def __init__(self):
         self.json_responses = {}
         self.errors = {}
+        self.text_responses = {}
+        self.text_errors = {}
         self.calls = []
 
     def get_json(self, url, **kwargs):
         self.calls.append(("get_json", url, kwargs))
         if url in self.errors:
             raise self.errors[url]
-        return self.json_responses[url]
+        if url in self.json_responses:
+            return self.json_responses[url]
+        raise ani_py.ProviderUnavailable(f"Unexpected GET JSON {url}")
+
+    def get(self, url, **kwargs):
+        self.calls.append(("get", url, kwargs))
+        if url in self.text_errors:
+            raise self.text_errors[url]
+        if url in self.text_responses:
+            return self.text_responses[url]
+        raise ani_py.ProviderUnavailable(f"Unexpected GET {url}")
 
 
 class TestAniLightProvider(unittest.TestCase):
@@ -190,9 +202,15 @@ class TestAniLightProvider(unittest.TestCase):
             f"{ani_py.ANILIGHT_API_URL}/sources?"
             "id=4321&epNum=1&type=sub&providerId=ryu"
         ] = {"sources": []}
+        http.text_errors["https://megaplay.buzz/stream/s-2/99/sub"] = (
+            ani_py.ProviderUnavailable("AniLight embed host failed: HTTP 404")
+        )
+        provider._info_cache[anime.provider_id] = {"id": 4321, "idMal": 20}
 
-        with self.assertRaises(ani_py.StreamNotFound):
+        with self.assertRaises(ani_py.ProviderUnavailable) as ctx:
             provider.resolve(anime, ani_py.Episode("1", "1"), "sub")
+        self.assertIn("portable source", str(ctx.exception))
+        self.assertIn("direct embed", str(ctx.exception))
 
     def test_mal_id_can_be_loaded_from_anime_document(self):
         http = FakeAniLightHttp()
@@ -218,6 +236,95 @@ class TestAniLightProvider(unittest.TestCase):
         self.assertTrue(provider.available())
         calls = [c for c in http.calls if c[1] == url]
         self.assertEqual(len(calls), 1)
+
+    def test_resolve_falls_back_to_direct_embed_on_turnstile_403(self):
+        import base64
+        import json
+
+        http = FakeAniLightHttp()
+        provider = ani_py.AniLightProvider(http)
+        anime = ani_py.Anime("20:naruto", "Naruto", "anilight")
+        embed_url = "https://megaplay.buzz/stream/s-2/99/sub"
+        master_url = "https://cdn.example/master.m3u8"
+        http.json_responses[f"{ani_py.ANILIGHT_API_URL}/watch/naruto"] = {
+            "id": 4321,
+            "episodes": [{"number": 1, "embed_url": {"sub": embed_url}}],
+        }
+        http.errors[
+            f"{ani_py.ANILIGHT_API_URL}/sources?"
+            "id=4321&epNum=1&type=sub&providerId=ryu"
+        ] = ani_py.ProviderUnavailable(
+            "AniLight API request failed: HTTP 403 "
+            "from https://api.anilight.live/api/sources?id=4321"
+        )
+        payload = {
+            "src": master_url,
+            "subtitles": [{"src": "https://sub.example/en.vtt", "label": "English"}],
+        }
+        raw = json.dumps(payload).encode()
+        blob = base64.b64encode(
+            bytes(b ^ ani_py.XOR_KEY[i % len(ani_py.XOR_KEY)] for i, b in enumerate(raw))
+        ).decode()
+        http.text_responses[embed_url] = f'<script>window.__P="{blob}"</script>'
+        http.text_responses[master_url] = (
+            "#EXTM3U\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720\n"
+            "720/index.m3u8\n"
+        )
+        provider._info_cache[anime.provider_id] = {"id": 4321, "idMal": 20}
+
+        bundle = provider.resolve(anime, ani_py.Episode("1", "1"), "sub")
+
+        self.assertEqual(bundle.provider, "anilight")
+        self.assertEqual(bundle.referer, "https://megaplay.buzz/")
+        self.assertEqual(bundle.mal_id, "20")
+        self.assertEqual(bundle.streams[0].url, "https://cdn.example/720/index.m3u8")
+        self.assertEqual(bundle.subtitle, "https://sub.example/en.vtt")
+        self.assertTrue(bundle.subtitle_tracks())
+
+    def test_resolve_falls_back_to_megaplay_getsources(self):
+        import json
+        from unittest.mock import patch
+
+        http = FakeAniLightHttp()
+        provider = ani_py.AniLightProvider(http)
+        anime = ani_py.Anime("20:naruto", "Naruto", "anilight")
+        embed_url = "https://megaplay.buzz/stream/s-2/99/sub"
+        master_url = "https://cdn.example/master.m3u8"
+        http.json_responses[f"{ani_py.ANILIGHT_API_URL}/watch/naruto"] = {
+            "id": 4321,
+            "episodes": [{"number": 1, "embed_url": {"sub": embed_url}}],
+        }
+        http.errors[
+            f"{ani_py.ANILIGHT_API_URL}/sources?"
+            "id=4321&epNum=1&type=sub&providerId=ryu"
+        ] = ani_py.ProviderUnavailable("AniLight API request failed: HTTP 403")
+        http.text_responses[embed_url] = (
+            '<div class="mg3-player"><div id="megaplay-player" '
+            'data-id="178266" data-realid="142018" data-mediaid="7980"></div></div>'
+        )
+        sources_url = "https://megaplay.buzz/stream/getSources?id=178266&type=sub"
+        http.text_responses[sources_url] = json.dumps({
+            "enc": "dummy",
+            "tracks": [{"file": "https://sub.example/en.vtt", "label": "English"}],
+        })
+        http.text_responses[master_url] = (
+            "#EXTM3U\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480\n"
+            "480/index.m3u8\n"
+        )
+        provider._info_cache[anime.provider_id] = {"id": 4321, "idMal": 20}
+
+        with patch.object(
+            ani_py, "_aes256_cbc_decrypt", return_value=b'{"file": "' + master_url.encode() + b'"}'
+        ):
+            bundle = provider.resolve(anime, ani_py.Episode("1", "1"), "sub")
+
+        self.assertEqual(bundle.provider, "anilight")
+        self.assertEqual(bundle.streams[0].url, "https://cdn.example/480/index.m3u8")
+        self.assertEqual(bundle.subtitle, "https://sub.example/en.vtt")
+        get_urls = [c[1] for c in http.calls if c[0] == "get"]
+        self.assertIn(sources_url, get_urls)
 
 
 if __name__ == "__main__":

@@ -235,7 +235,9 @@ failover enabled (rejected: slow confusing failures instead of clean skip).
 `api.anilight.live` for catalog/episode data and the current portable
 `ryu`/AnimeGG source through AniLight's own proxy. Keep it out of the default
 automatic chain until live desktop and Termux smoke testing is complete.
-**Status:** Current
+**Status:** Current (2026.10.11: `/sources` now requires a browser-minted
+Turnstile `x-source-session`; resolve falls back to the `/watch` document's
+direct megaplay.buzz `embed_url`, same backend HiAnime drives, with soft subs).
 **Reason:** It fits the stdlib + curl architecture better than providers that
 require browser automation or third-party hosted scraper dependencies. AniLight
 also exposes broader HLS/soft-sub backends, but their current CDN/proxy rules are
@@ -243,7 +245,9 @@ more complex and are deliberately deferred until playback behavior is proven.
 **Alternatives Considered:** Making it the default backup immediately
 (rejected until live acceptance); AnimePahe/Miruro direct adapters (deferred
 because their current anti-bot requirements conflict with the lightweight
-runtime design).
+runtime design); minting Turnstile session tokens in ani-py (rejected: it
+requires executing Cloudflare's browser challenge, which is a different
+product with a different risk profile, same as the rejected browser layer).
 
 ### mpv-first playback with private IPC
 **Choice:** mpv primary; per-process private IPC socket; episode queues
@@ -587,6 +591,13 @@ semver cannot creep back in.
   provider.
 - CDN throughput varies (~400KB/s observed); slow downloads are usually
   the CDN, not the app. yt-dlp fragment retries handle transient stalls.
+- AniLight `/sources` answers HTTP 403 `{"error":"Missing Turnstile session
+  token"}` without a browser-minted `x-source-session` header (verified
+  2026.10.11; `/search` and `/watch` still answer anonymously). ani-py keeps
+  trying the portable route first and falls back to the `/watch` document's
+  `embed_url` (megaplay.buzz, same `data-id` + `stream/getSources` + AES
+  backend HiAnime drives). A search-only live check cannot catch this class
+  of breakage; resolve must be exercised, not just search.
 
 ### CLI parsing
 - `--menu-flags --exact` fails (`expected one argument`) - argparse won't
@@ -699,7 +710,7 @@ ANI_PY_DOWNLOAD_DIR=/tmp/x          # redirect downloads
 | Service | Purpose |
 |---|---|
 | hianime (scraped) | Primary: search, episodes, stream/subtitle resolve |
-| AniLight | Experimental direct backup: AniList/slug search, sub/dub portable progressive source via AniLight API proxy, MAL metadata |
+| AniLight | Experimental direct backup: AniList/slug search, episode list with per-episode megaplay `embed_url`, portable `/sources` proxy attempt with direct-embed megaplay fallback (HLS + soft subs), MAL metadata |
 | CDN media hosts | HLS segments, subtitle files |
 
 Default `auto` mode currently uses HiAnime only. AniLight is an experimental

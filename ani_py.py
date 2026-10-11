@@ -44,7 +44,7 @@ APP_NAME = "ani-py"
 # Calendar version (CalVer): the date the most recent user-visible change landed.
 # Monotonic by construction and comparable across automated release snapshots.
 # Bump it in the same commit as the change - see "Versioning" in CONTRIBUTING.md.
-VERSION = "2026.10.10"
+VERSION = "2026.10.11"
 # How many consecutive failed mpv IPC polls wait_for_completion tolerates before
 # declaring the socket dead. mpv answers "property unavailable" for a few
 # milliseconds after its socket appears but before the first file loads, so one
@@ -1067,23 +1067,23 @@ class HianimeProvider(Provider):
 # ---------- AniLight experimental provider ----------
 
 class AniLightProvider(Provider):
-    """AniLight catalog + currently playable direct-source adapter.
+    """AniLight catalog + direct-embed adapter.
 
-    AniLight exposes catalog/episode JSON through api.anilight.live. Its source
-    endpoint fans out to several upstream servers. For the initial ani-py
-    adapter we deliberately use the "ryu" / AnimeGG route because it returns
-    progressive MP4 files and AniLight's own proxy makes those URLs portable
-    across desktop and Android players without provider-specific HLS surgery.
-
-    Other AniLight backends expose soft subtitles and broader coverage, but
-    currently require changing CDN/proxy rules. Keep those out until their
-    playback behavior is proven against ani-py's desktop and Android paths.
+    AniLight exposes catalog/episode JSON through api.anilight.live. Its
+    `/sources` endpoint fans out to several upstream servers, but since
+    2026-10 it sits behind a Cloudflare Turnstile check: without a
+    browser-solved `x-source-session` header it answers HTTP 403
+    `{"error":"Missing Turnstile session token"}`, which a stdlib + curl
+    client cannot mint. The `/watch` document already carries a per-episode
+    `embed_url` (currently megaplay.buzz, the same backend HiAnime drives),
+    so resolve() keeps trying the portable `/sources` route first and falls
+    back to resolving that embed directly when the API refuses.
     """
 
     name = "anilight"
     display_name = "AniLight"
     capabilities = ProviderCapabilities(
-        sub=True, dub=True, subtitles=False, qualities=True, mal_id=True
+        sub=True, dub=True, subtitles=True, qualities=True, mal_id=True
     )
     experimental = True
 
@@ -1318,29 +1318,115 @@ class AniLightProvider(Provider):
         # AnimeGG route. Do not hardcode the rotating worker hostname itself.
         return self.api + "/proxy/ryu?" + urlencode({"url": upstream})
 
-    def resolve(self, anime: Anime | str, episode: Episode, mode: str) -> StreamBundle:
-        if mode not in {"sub", "dub"}:
-            raise StreamNotFound(f"AniLight does not support mode {mode!r}.")
+    def _resolve_megaplay_embed(
+        self, embed_page: str, referer: str, mode: str, mal_id: Optional[str]
+    ) -> StreamBundle:
+        """Resolve a megaplay.buzz embed page (same backend HiAnime drives).
 
-        row = self._episode_rows(anime).get(episode.number)
-        if not row:
-            raise EpisodeNotFound(f"AniLight episode {episode.number} was not found.")
+        data-id is the per-episode, per-mode identifier the player sends to
+        getSources; data-realid is shared between sub and dub and resolves to
+        the wrong show, so it must never be sent. Parsing helpers are shared
+        with HianimeProvider to keep the AES/HLS logic in one place."""
+        id_match = re.search(r'data-id="(\d+)"', embed_page)
+        if not id_match:
+            raise ProviderChanged("AniLight player markup changed; no media id was present.")
+        media_id = id_match.group(1)
+        try:
+            payload = self.http.get(
+                f"{referer}stream/getSources?id={media_id}&type={mode}",
+                referer=referer,
+                headers={"X-Requested-With": "XMLHttpRequest"},
+            )
+        except HttpError as exc:
+            raise ProviderUnavailable(f"AniLight embed source manifest failed: {exc}") from exc
+        try:
+            sources = json.loads(payload)
+            enc = sources["enc"]
+            if not isinstance(enc, str):
+                raise TypeError("enc is not a string")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ProviderChanged(f"AniLight source manifest is malformed: {exc}") from exc
+        try:
+            manifest = json.loads(_aes256_cbc_decrypt(enc, MEGAPLAY_KEY, MEGAPLAY_IV))
+        except (ValueError, TypeError) as exc:
+            raise ProviderChanged(f"AniLight source manifest could not be decrypted: {exc}") from exc
+        master_url = manifest.get("file") if isinstance(manifest, dict) else None
+        if not isinstance(master_url, str) or ".m3u8" not in master_url:
+            raise StreamNotFound("AniLight source manifest contained no HLS playlist.")
+        tracks = HianimeProvider._subtitle_tracks({"subtitles": sources.get("tracks")})
+        default_track = HianimeProvider._default_subtitle(tracks)
+        try:
+            master = self.http.get(master_url, referer=referer)
+        except HttpError as exc:
+            raise ProviderUnavailable(f"AniLight HLS host failed: {exc}") from exc
+        streams = HianimeProvider._parse_master(master, master_url)
+        if not streams:
+            streams = [Stream(quality="auto", url=master_url)]
+        return StreamBundle(
+            streams=streams,
+            subtitle=default_track.url if default_track else None,
+            referer=referer,
+            mal_id=mal_id,
+            provider=self.name,
+            subtitle_language=default_track.language if default_track else None,
+            subtitle_label=default_track.label if default_track else None,
+            subtitles=tracks,
+        )
 
-        embeds = row.get("embed_url")
-        if isinstance(embeds, dict):
-            marker = embeds.get(mode)
-            if not isinstance(marker, str) or not marker:
-                raise StreamNotFound(f"AniLight has no {mode} version for episode {episode.number}.")
+    def _resolve_embed_url(self, embed_url: str, mode: str, mal_id: Optional[str]) -> StreamBundle:
+        """Resolve an AniLight `embed_url` without touching `/sources`."""
+        parts = urlsplit(embed_url)
+        referer = f"{parts.scheme}://{parts.netloc}/"
+        mal_match = re.search(r"/mal/(\d+)/", embed_url)
+        resolved_mal_id = mal_match.group(1) if mal_match else mal_id
+        try:
+            embed_page = self.http.get(embed_url, referer=self.base + "/")
+        except HttpError as exc:
+            raise ProviderUnavailable(f"AniLight embed host failed: {exc}") from exc
+        except AttributeError as exc:
+            raise ProviderUnavailable(f"AniLight embed fetch needs http.get: {exc}") from exc
+        if 'class="error-container"' in embed_page:
+            raise ProviderUnavailable(
+                f"AniLight embed host {parts.netloc} served its error page instead of a player"
+            )
+        blob_match = re.search(r'window\.__P\s*=\s*"([^"]+)"', embed_page)
+        if not blob_match:
+            return self._resolve_megaplay_embed(embed_page, referer, mode, resolved_mal_id)
+        try:
+            payload = HianimeProvider._deobfuscate(blob_match.group(1))
+        except ValueError as exc:
+            raise ProviderChanged(str(exc)) from exc
+        master_url = HianimeProvider._pick_source_url(payload)
+        if not master_url:
+            raise StreamNotFound("AniLight payload contained no HLS source.")
+        subtitle_tracks = HianimeProvider._subtitle_tracks(payload)
+        default_subtitle = HianimeProvider._default_subtitle(subtitle_tracks)
+        try:
+            master = self.http.get(master_url, referer=referer)
+        except HttpError as exc:
+            raise ProviderUnavailable(f"AniLight HLS host failed: {exc}") from exc
+        streams = HianimeProvider._parse_master(master, master_url)
+        if not streams:
+            streams = [Stream(quality="auto", url=master_url)]
+        return StreamBundle(
+            streams=streams,
+            subtitle=default_subtitle.url if default_subtitle else None,
+            referer=referer,
+            mal_id=resolved_mal_id,
+            provider=self.name,
+            subtitle_language=default_subtitle.language if default_subtitle else None,
+            subtitle_label=default_subtitle.label if default_subtitle else None,
+            subtitles=subtitle_tracks,
+        )
 
+    def _resolve_via_sources(self, anime: Anime | str, episode: Episode, mode: str) -> StreamBundle:
         anime_id = self._numeric_id(anime)
         if not anime_id:
             raise ProviderChanged("AniLight watch response did not expose its numeric anime id.")
-
         payload = self._sources(anime_id, episode.number, mode)
         raw_sources = payload.get("sources")
         if not isinstance(raw_sources, list):
             raise ProviderChanged("AniLight source response did not contain a sources list.")
-
         streams: list[Stream] = []
         seen: set[str] = set()
         for item in raw_sources:
@@ -1354,12 +1440,10 @@ class AniLightProvider(Provider):
                 continue
             streams.append(Stream(self._quality(item.get("quality")), proxied))
             seen.add(proxied)
-
         if not streams:
             raise StreamNotFound(
                 f"AniLight's portable source has no {mode} stream for episode {episode.number}."
             )
-
         streams.sort(key=stream_rank, reverse=True)
         return StreamBundle(
             streams=streams,
@@ -1368,6 +1452,33 @@ class AniLightProvider(Provider):
             mal_id=self._mal_id(anime),
             provider=self.name,
         )
+
+    def resolve(self, anime: Anime | str, episode: Episode, mode: str) -> StreamBundle:
+        if mode not in {"sub", "dub"}:
+            raise StreamNotFound(f"AniLight does not support mode {mode!r}.")
+        row = self._episode_rows(anime).get(episode.number)
+        if not row:
+            raise EpisodeNotFound(f"AniLight episode {episode.number} was not found.")
+        embed_url: Optional[str] = None
+        embeds = row.get("embed_url")
+        if isinstance(embeds, dict):
+            marker = embeds.get(mode)
+            if isinstance(marker, str) and marker:
+                embed_url = marker
+        if not embed_url:
+            raise StreamNotFound(f"AniLight has no {mode} version for episode {episode.number}.")
+        try:
+            return self._resolve_via_sources(anime, episode, mode)
+        except ProviderError as primary_exc:
+            try:
+                bundle = self._resolve_embed_url(embed_url, mode, self._mal_id(anime))
+            except ProviderError as fallback_exc:
+                raise ProviderUnavailable(
+                    f"AniLight resolve failed (portable source: {primary_exc}; "
+                    f"direct embed: {fallback_exc})"
+                ) from fallback_exc
+            warn(f"AniLight portable source unavailable ({primary_exc}); using direct embed.")
+            return bundle
 
 
 # ---------- provider manager ----------
