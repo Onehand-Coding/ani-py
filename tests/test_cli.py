@@ -101,6 +101,11 @@ class TestCLI(unittest.TestCase):
         ns = parser.parse_args(["--provider-order", "hianime,anilight", "frieren"])
         self.assertEqual(ns.provider_order, "hianime,anilight")
 
+    def test_history_flag_parses(self):
+        parser = ani_py.build_parser()
+        self.assertTrue(parser.parse_args(["--history"]).history)
+        self.assertFalse(parser.parse_args(["frieren"]).history)
+
     def test_dash_flag_passthrough_needs_equals_form(self):
         # argparse treats a bare `--flag` value as another option, so the
         # documented `--opt='--flag'` form must parse for both passthroughs.

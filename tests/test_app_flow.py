@@ -803,6 +803,87 @@ class TestAppFlow(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 1)
         _mock(app.history, "remove").assert_not_called()
 
+    def _history_app(self, entries, history_picks, action_picks, answer="y", sort=None):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(history=True, query=[], sort=sort)
+        app.history = Mock()
+        app.history.load.return_value = entries
+        app.history.remove.return_value = 1
+        app.menu = Mock()
+        calls = {"history": list(history_picks), "action": list(action_picks)}
+        def choose(rows, prompt, **kw):
+            if prompt.startswith("History"):
+                idxs = calls["history"].pop(0) if calls["history"] else []
+                return [rows[i] for i in idxs]
+            idxs = calls["action"].pop(0) if calls["action"] else []
+            return [rows[i] for i in idxs]
+        app.menu.choose.side_effect = choose
+        app.menu.prompt_text.return_value = answer
+        return app
+
+    def test_history_play_returns_entry_for_playback(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+            ani_py.HistoryEntry("4", "hianime", "one-piece-100", "One Piece", False),
+        ]
+        app = self._history_app(entries, history_picks=[[1]], action_picks=[[0]])
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            result = app._browse_history()
+        self.assertIsNotNone(result)
+        anime, episode, completed = result
+        self.assertEqual((anime.provider_id, anime.title, episode, completed),
+                         ("one-piece-100", "One Piece", "4", False))
+
+    def test_history_forget_removes_single_entry_then_exits(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+            ani_py.HistoryEntry("4", "hianime", "one-piece-100", "One Piece", False),
+        ]
+        app = self._history_app(entries, history_picks=[[0], []], action_picks=[[1]])
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        _mock(app.history, "remove").assert_called_once_with([entries[0]])
+
+    def test_history_cancel_at_list_exits_zero(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+        ]
+        app = self._history_app(entries, history_picks=[[]], action_picks=[])
+        app._search_anime = Mock()
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        _mock(app, "_search_anime").assert_not_called()
+        _mock(app.history, "remove").assert_not_called()
+
+    def test_history_empty_fails(self):
+        app = self._history_app([], history_picks=[[]], action_picks=[])
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                app.run()
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_history_back_returns_to_list(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+            ani_py.HistoryEntry("4", "hianime", "one-piece-100", "One Piece", False),
+        ]
+        app = self._history_app(entries, history_picks=[[0], []], action_picks=[[2]])
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        self.assertEqual(_mock(app.menu, "choose").call_count, 3)
+        _mock(app.history, "remove").assert_not_called()
+
+    def test_history_sort_recent_shows_newest_first(self):
+        entries = [
+            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
+            ani_py.HistoryEntry("4", "hianime", "one-piece-100", "One Piece", False),
+        ]
+        app = self._history_app(entries, history_picks=[[0]], action_picks=[[0]], sort="recent")
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            result = app._browse_history()
+        anime, episode, _ = result
+        self.assertEqual((anime.provider_id, episode), ("one-piece-100", "4"))
+
 
 if __name__ == "__main__":
     unittest.main()
