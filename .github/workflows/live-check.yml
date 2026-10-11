@@ -9,6 +9,13 @@ name: live-check
 # rate-limit, so this must never block a merge. A red run means "go look":
 # rerun ./scripts/check-providers-live.sh locally, then fix in the one
 # provider class that owns the breakage.
+#
+# Known limit: GitHub runner IPs get a Cloudflare browser challenge on the
+# AniLight API (verified 2x 2026.10.11) while a home network answers
+# anonymously, so this schedule reliably watches the default HiAnime chain
+# and best-efforts AniLight. Probe AniLight manually from an ungated
+# network; do NOT make experimental failures fatal here, that would file
+# a noise issue every Monday.
 on:
   schedule:
     # Mondays 06:00 UTC. Scheduled runs only fire on the default branch.
