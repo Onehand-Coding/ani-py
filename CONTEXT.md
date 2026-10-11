@@ -128,6 +128,7 @@ provider-aware history.
 - Filenames/titles from the network are sanitized before touching disk.
 
 **CLI:**
+- Menu cancellations step back one level (results to search, episodes to results); only cancelling the text prompt itself exits.
 - Env-var defaults mirror flags (`ANI_PY_*`: mode, quality, player,
   skip, detach, download dir, IPC socket, menu flags, subtitle language).
 - Passthrough options (`--menu-flags`, `--player-flag`) take dash-flags

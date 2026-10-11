@@ -4127,7 +4127,7 @@ class App:
         self.last_subtitle: Optional[SubtitleTrack] = None
         self.subtitle_preference = getattr(args, "sub_lang", None) or "auto"
 
-    def _search_anime(self, query: str) -> Anime:
+    def _fetch_search_results(self, query: str) -> list[Anime]:
         status(f"Searching for {sty(query, C.BOLD)}")
         try:
             results = self.providers.search(query, self.args.provider)
@@ -4135,6 +4135,9 @@ class App:
             fail(str(exc))
         if not results:
             fail("No results found.")
+        return results
+
+    def _choose_anime(self, results: Sequence[Anime]) -> Optional[Anime]:
         rows, mapping = format_anime_rows(results)
         if self.args.select_nth:
             idx = self.args.select_nth - 1
@@ -4144,13 +4147,43 @@ class App:
         else:
             picked = self.menu.choose(rows, "Anime › ")
             if not picked:
-                raise SystemExit(0)
+                return None
             if picked[0] not in mapping:
                 fail("Selection did not match any result.")
             chosen = mapping[picked[0]]
         provider = self.providers.get(chosen.provider)
         ok(f"Selected {chosen.title}  [{provider.display_name}]")
         return chosen
+
+    def _search_flow(self, initial_query: str) -> tuple[Anime, list[Episode], list[Episode]]:
+        query: Optional[str] = initial_query
+        results: Optional[list[Anime]] = None
+        anime: Optional[Anime] = None
+        while True:
+            while anime is None:
+                if not query:
+                    clear_screen()
+                    banner("Search • select • watch")
+                    print()
+                    query = self.menu.prompt_text("  Search ›")
+                    if query is None:
+                        raise SystemExit(130)
+                    if not query:
+                        raise SystemExit(0)
+                    results = None
+                if results is None:
+                    results = self._fetch_search_results(query)
+                anime = self._choose_anime(results)
+                if anime is None:
+                    query = ""
+                    results = None
+            picked = self._pick_episodes(anime, None, True)
+            if picked is None:
+                if self.args.select_nth:
+                    raise SystemExit(0)
+                anime = None
+                continue
+            return picked
 
     @staticmethod
     def _history_rows(entries: Sequence[HistoryEntry]) -> list[str]:
@@ -4347,7 +4380,7 @@ class App:
 
     def _pick_episodes(
         self, anime: Anime, continue_after: Optional[str], continue_completed: bool = True
-    ) -> tuple[Anime, list[Episode], list[Episode]]:
+    ) -> Optional[tuple[Anime, list[Episode], list[Episode]]]:
         status("Loading episodes")
         try:
             anime, episodes = self._episodes_with_fallback(anime)
@@ -4380,7 +4413,7 @@ class App:
         picked = self.menu.choose(rows, "Episode › ", multi=True)
         selected = [mapping[row] for row in picked if row in mapping]
         if not selected:
-            raise SystemExit(0)
+            return None
         return anime, episodes, selected
 
     def _search_another_anime(self) -> Optional[tuple[Anime, list[Episode], Episode]]:
@@ -5083,26 +5116,21 @@ class App:
             if result is not None:
                 return result
 
+        picked_bundle: Optional[tuple[Anime, list[Episode], list[Episode]]] = None
         if history_pick is not None:
             anime, continue_after, continue_completed = history_pick
+            picked_bundle = self._pick_episodes(anime, continue_after, continue_completed)
+            if picked_bundle is None:
+                return 0
         elif self.args.continue_watching:
             anime, continue_after, continue_completed = self._from_history()
-        else:
-            query = " ".join(self.args.query).strip()
-            if not query:
-                clear_screen()
-                banner("Search • select • watch")
-                print()
-                query = self.menu.prompt_text("  Search ›")
-                if query is None:
-                    return 130
-            if not query:
+            picked_bundle = self._pick_episodes(anime, continue_after, continue_completed)
+            if picked_bundle is None:
                 return 0
-            anime = self._search_anime(query)
-            continue_after = None
-            continue_completed = True
+        else:
+            picked_bundle = self._search_flow(" ".join(self.args.query).strip())
 
-        anime, episodes, selected = self._pick_episodes(anime, continue_after, continue_completed)
+        anime, episodes, selected = picked_bundle
 
         if getattr(self.args, "auto_next", False):
             return self._run_auto_next(anime, episodes, selected, self.args.quality)
