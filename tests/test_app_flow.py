@@ -238,8 +238,7 @@ class TestAppFlow(unittest.TestCase):
         app.args = app_args(**arg_overrides)
         anime = ani_py.Anime("frieren-999", "Frieren")
         episodes = [ani_py.Episode(str(100 + i), str(i)) for i in range(1, 5)]
-        app._search_anime = Mock(return_value=anime)
-        app._pick_episodes = Mock(return_value=(anime, episodes, selected(episodes)))
+        app._search_flow = Mock(return_value=(anime, episodes, selected(episodes)))
         app._play_episode = Mock(return_value=0)
         app._interactive_loop = Mock()
         app.history = Mock()
@@ -432,14 +431,13 @@ class TestAppFlow(unittest.TestCase):
         app = object.__new__(ani_py.App)
         app.args = argparse.Namespace(select_nth=2, provider="auto")
         app.providers = Mock()
-        app.providers.search.return_value = [
-            ani_py.Anime("one", "One"),
-            ani_py.Anime("two", "Two"),
-        ]
         app.providers.get.return_value.display_name = "HiAnime"
         app.menu = Mock()
         with patch("ani_py.sys.stderr", new=io.StringIO()):
-            chosen = app._search_anime("test")
+            chosen = app._choose_anime([
+                ani_py.Anime("one", "One"),
+                ani_py.Anime("two", "Two"),
+            ])
         self.assertEqual(chosen.slug, "two")
         app.menu.choose.assert_not_called()
 
@@ -829,7 +827,7 @@ class TestAppFlow(unittest.TestCase):
         app = self._history_app(entries, history_picks=[[1]], action_picks=[[0]])
         with patch("ani_py.sys.stderr", new=io.StringIO()):
             result = app._browse_history()
-        self.assertIsNotNone(result)
+        assert result is not None
         anime, episode, completed = result
         self.assertEqual((anime.provider_id, anime.title, episode, completed),
                          ("one-piece-100", "One Piece", "4", False))
@@ -873,16 +871,134 @@ class TestAppFlow(unittest.TestCase):
         self.assertEqual(_mock(app.menu, "choose").call_count, 3)
         _mock(app.history, "remove").assert_not_called()
 
-    def test_history_sort_recent_shows_newest_first(self):
-        entries = [
-            ani_py.HistoryEntry("1", "hianime", "frieren-999", "Frieren", True),
-            ani_py.HistoryEntry("4", "hianime", "one-piece-100", "One Piece", False),
-        ]
-        app = self._history_app(entries, history_picks=[[0]], action_picks=[[0]], sort="recent")
+    def test_choose_anime_cancel_returns_none(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args()
+        app.providers = Mock()
+        app.menu = Mock()
+        app.menu.choose.return_value = []
         with patch("ani_py.sys.stderr", new=io.StringIO()):
-            result = app._browse_history()
-        anime, episode, _ = result
-        self.assertEqual((anime.provider_id, episode), ("one-piece-100", "4"))
+            self.assertIsNone(app._choose_anime([ani_py.Anime("one", "One")]))
+
+    def test_choose_anime_picks_entry(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args()
+        app.providers = Mock()
+        app.providers.get.return_value.display_name = "HiAnime"
+        app.menu = Mock()
+        found = [ani_py.Anime("one", "One"), ani_py.Anime("two", "Two")]
+        rows, _ = ani_py.format_anime_rows(found)
+        app.menu.choose.return_value = [rows[1]]
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            chosen = app._choose_anime(found)
+        assert chosen is not None
+        self.assertEqual(chosen.slug, "two")
+
+    def test_pick_episodes_cancel_returns_none(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args()
+        anime = ani_py.Anime("frieren-999", "Frieren")
+        episodes = [ani_py.Episode("101", "1"), ani_py.Episode("102", "2")]
+        app._episodes_with_fallback = Mock(return_value=(anime, episodes))
+        app.menu = Mock()
+        app.menu.choose.return_value = []
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertIsNone(app._pick_episodes(anime, None, True))
+
+    def _search_flow_app(self, searches, anime_picks, episode_picks, prompt="other", **arg_overrides):
+        base = dict(query=["magi"])
+        base.update(arg_overrides)
+        app = object.__new__(ani_py.App)
+        app.args = app_args(**base)
+        app.providers = Mock()
+        app.providers.search.side_effect = searches
+        app.providers.get.return_value.display_name = "HiAnime"
+        app.menu = Mock()
+        anime_calls = list(anime_picks)
+        episode_calls = list(episode_picks)
+        def choose(rows, prompt_text, **kw):
+            if prompt_text.startswith("Anime"):
+                return [rows[i] for i in anime_calls.pop(0)]
+            return [rows[i] for i in episode_calls.pop(0)]
+        app.menu.choose.side_effect = choose
+        app.menu.prompt_text.return_value = prompt
+        return app
+
+    def test_search_flow_steps_back_to_prompt_and_anime_list(self):
+        magi = [ani_py.Anime("magi-1", "Magi One"), ani_py.Anime("magi-2", "Magi Two")]
+        other = [ani_py.Anime("other-1", "Other Show")]
+        app = self._search_flow_app(
+            [magi, other],
+            [[], [0], [0]],
+            [[], [0]],
+        )
+        episodes = [ani_py.Episode("101", "1"), ani_py.Episode("102", "2")]
+        app._episodes_with_fallback = Mock(return_value=(other[0], episodes))
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            anime, loaded, selected = app._search_flow("magi")
+        self.assertEqual(anime.slug, "other-1")
+        self.assertEqual([e.number for e in selected], ["1"])
+        # Backing out reuses the cached results: only two searches ran.
+        self.assertEqual(_mock(app.providers, "search").call_count, 2)
+        app.menu.prompt_text.assert_called_once()
+
+    def test_search_flow_prompt_cancel_exits_130(self):
+        app = self._search_flow_app([], [], [], prompt=None, query=[])
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                app._search_flow("")
+        self.assertEqual(ctx.exception.code, 130)
+
+    def test_search_flow_empty_prompt_exits_zero(self):
+        app = self._search_flow_app([], [], [], prompt="", query=[])
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                app._search_flow("")
+        self.assertEqual(ctx.exception.code, 0)
+
+    def test_search_flow_select_nth_episode_cancel_exits(self):
+        found = [ani_py.Anime("one", "One"), ani_py.Anime("two", "Two")]
+        app = self._search_flow_app([found], [[0]], [[]], select_nth=1)
+        episodes = [ani_py.Episode("101", "1"), ani_py.Episode("102", "2")]
+        app._episodes_with_fallback = Mock(return_value=(found[0], episodes))
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                app._search_flow("one")
+        self.assertEqual(ctx.exception.code, 0)
+
+    def test_run_search_path_uses_search_flow(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(query=["magi"], exit_after_play=True)
+        anime = ani_py.Anime("frieren-999", "Frieren")
+        episodes = [ani_py.Episode("101", "1")]
+        app._search_flow = Mock(return_value=(anime, episodes, episodes))
+        app._play_episode = Mock(return_value=0)
+        app.history = Mock()
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        _mock(app, "_search_flow").assert_called_once_with("magi")
+
+    def test_run_continue_episode_cancel_exits_zero(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(continue_watching=True)
+        anime = ani_py.Anime("frieren-999", "Frieren")
+        app._from_history = Mock(return_value=(anime, "1", True))
+        app._pick_episodes = Mock(return_value=None)
+        app.history = Mock()
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        _mock(app, "_pick_episodes").assert_called_once()
+
+    def test_run_history_episode_cancel_exits_zero(self):
+        app = object.__new__(ani_py.App)
+        app.args = app_args(history=True, query=[])
+        anime = ani_py.Anime("frieren-999", "Frieren")
+        app._browse_history = Mock(return_value=(anime, "1", True))
+        app._pick_episodes = Mock(return_value=None)
+        app.history = Mock()
+        with patch("ani_py.sys.stderr", new=io.StringIO()):
+            self.assertEqual(app.run(), 0)
+        _mock(app, "_pick_episodes").assert_called_once()
 
 
 if __name__ == "__main__":

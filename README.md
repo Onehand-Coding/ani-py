@@ -137,6 +137,8 @@ ani-py -p mpv "frieren"                    # mpv
 
 Run `ani-py --help` for the complete current option list.
 
+Cancelling a results or episode list steps back one level (Esc at the Anime list returns to the search prompt); only cancelling the search prompt itself quits.
+
 ### Auto-next
 
 `--auto-next` is controlled by ani-py rather than by a streaming provider.
